@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Three.js Game</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+      }
+      #hpBar {
+        position: fixed;
+        top: 20px;
+        left: 10px;
+        width: 200px;
+        height: 20px;
+        background-color: rgba(0, 0, 0, 0.5);
+        border: 2px solid white;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      #hpFill {
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(to right, #ff3838, #ff6b6b);
+        transition: width 0.3s ease;
+      }
+      #hpText {
+        position: absolute;
+        width: 100%;
+        text-align: center;
+        color: white;
+        font-family: Arial, sans-serif;
+        font-weight: bold;
+        line-height: 20px;
+        text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+      }
+      #inventory {
+        position: fixed;
+        bottom: 20px;
+        left: 20px;
+        display: flex;
+        gap: 10px;
+        padding: 10px;
+        background-color: rgba(0, 0, 0, 0.5);
+        border-radius: 10px;
+      }
+      .inventory-slot {
+        width: 50px;
+        height: 50px;
+        background-color: rgba(255, 255, 255, 0.1);
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        position: relative;
+        transition: all 0.3s ease;
+      }
+      .inventory-slot:hover {
+        background-color: rgba(255, 255, 255, 0.2);
+        border-color: rgba(255, 255, 255, 0.5);
+      }
+      .inventory-slot.active {
+        border-color: #FF69B4;
+        box-shadow: 0 0 10px #FF69B4;
+      }
+      .inventory-slot img {
+        width: 30px;
+        height: 30px;
+        filter: invert(1);
+      }
+      .item-tooltip {
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 5px 10px;
+        border-radius: 5px;
+        font-size: 14px;
+        white-space: nowrap;
+        display: none;
+        pointer-events: none;
+        margin-bottom: 5px;
+      }
+      #tutorial {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background-color: rgba(0, 0, 0, 0.9);
+        color: white;
+        padding: 30px;
+        border-radius: 15px;
+        font-family: Arial, sans-serif;
+        max-width: 500px;
+        width: 90%;
+        display: none;
+        border: 2px solid #FF69B4;
+        box-shadow: 0 0 20px rgba(255, 105, 180, 0.3);
+      }
+      #tutorial h2 {
+        color: #FF69B4;
+        margin-bottom: 15px;
+        text-align: center;
+      }
+      #tutorial-controls {
+        background-color: rgba(255, 255, 255, 0.1);
+        padding: 15px;
+        border-radius: 8px;
+        margin: 15px 0;
+        font-family: monospace;
+        font-size: 14px;
+      }
+      #tutorial-close {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: none;
+        border: none;
+        color: white;
+        font-size: 20px;
+        cursor: pointer;
+        padding: 5px;
+      }
+      #tutorial-close:hover {
+        color: #FF69B4;
+      }
+      #tutorial-progress {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background-color: rgba(0, 0, 0, 0.8);
+        color: white;
+        padding: 10px;
+        border-radius: 5px;
+        font-family: Arial, sans-serif;
+        display: none;
+      }
+      #tutorial-step {
+        margin-bottom: 15px;
+        font-size: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hpBar">
+      <div id="hpFill"></div>
+      <div id="hpText">100/100</div>
+    </div>
+    <div id="inventory">
+      <div class="inventory-slot active" data-item="wings">
+        <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyQzE3LjUyIDIgMjIgNi40OCAyMiAxMkMyMiAxNy41MiAxNy41MiAyMiAxMiAyMkM2LjQ4IDIyIDIgMTcuNTIgMiAxMkMyIDYuNDggNi40OCAyIDEyIDJaTTEyIDRDNy41OCA0IDQgNy41OCA0IDEyQzQgMTYuNDIgNy41OCAyMCAxMiAyMEMxNi40MiAyMCAyMCAxNi40MiAyMCAxMkMyMCA3LjU4IDE2LjQyIDQgMTIgNFpNMTIgNkMxNC4yMSA2IDE2IDcuNzkgMTYgMTBDMTYgMTEuMjYgMTUuNDQgMTIuMzkgMTQuNSAxMy4xNUwxNiAxOEgxNEwxMi41IDEzLjE1QzExLjU2IDEyLjM5IDExIDExLjI2IDExIDEwQzExIDcuNzkgMTIuNzkgNiAxNSA2WiIvPjwvc3ZnPg==" alt="Pegasus Wings">
+        <div class="item-tooltip">Pegasus Wings (Active)</div>
+      </div>
+      <div class="inventory-slot" data-item="wand">
+        <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik03LjUgNS42TDUgN0w2LjQgNC41TDUgMkw3LjUgMy40TDEwIDJMOC42IDQuNUwxMCA3TDcuNSA1LjZNMTkuNSA1LjZMMTcgN0wxOC40IDQuNUwxNyAyTDE5LjUgMy40TDIyIDJMMjAuNiA0LjVMMjIgN0wxOS41IDUuNk0xMS41IDkuNkw5IDExTDEwLjQgOC41TDkgNkwxMS41IDcuNEwxNCA2TDEyLjYgOC41TDE0IDExTDExLjUgOS42TTEwIDIwQzEwIDE4LjkgMTAuOSAxOCAxMiAxOEMxMy4xIDE4IDE0IDE4LjkgMTQgMjBIMTBaIi8+PC9zdmc+" alt="Magic Wand">
+        <div class="item-tooltip">Magic Wand (Inactive)</div>
+      </div>
+      <div class="inventory-slot" data-item="guide">
+        <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xOCA0SDZDMy43OSA0IDIgNS43OSAyIDhWMTZDMiAxOC4yMSAzLjc5IDIwIDYgMjBIMThjMi4yMSAwIDQtMS43OSA0LTRWOGMwLTIuMjEtMS43OS00LTQtNHptLTEuNzUgOWwtMi41IDNsLTIuNS0zSDguNWw0IDQuMjVsNCA0LjI1di0xLjVsLTIuNzUtMy4yNWgyLjc1bC0yLjc1LTMuMjVoMi43NXoiLz48L3N2Zz4=" alt="Guide Book">
+        <div class="item-tooltip">Guide Book (Click for Help)</div>
+      </div>
+    </div>
+    <div id="tutorial">
+      <button id="tutorial-close">&times;</button>
+      <h2>Magical Village Guide</h2>
+      <div id="tutorial-content">
+        <p><strong>Story:</strong> The villagers have been turned to crystal by an evil spell. Help break the curse by collecting all the magical crystals!</p>
+        
+        <div id="tutorial-controls">
+          <strong>Controls:</strong><br>
+          W - Move Forward<br>
+          S - Move Backward<br>
+          A - Move Left<br>
+          D - Move Right<br>
+          SPACEBAR - Hold to Fly (requires active wings)<br>
+          Mouse (Hold Left) - Rotate Camera
+        </div>
+
+        <p><strong>Items:</strong></p>
+        <ul>
+          <li>Pegasus Wings - Toggle to enable/disable flying</li>
+          <li>Magic Wand - Toggle for magical effects</li>
+        </ul>
+
+        <p><strong>Tips:</strong></p>
+        <ul>
+          <li>Collect crystals to heal yourself</li>
+          <li>Watch your HP when falling from heights</li>
+          <li>Use the platforms to reach higher areas</li>
+        </ul>
+      </div>
+    </div>
+    <div id="tutorial-progress">
+      Crystals Collected: <span id="crystals-collected">0</span>/<span id="total-crystals">0</span>
+    </div>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html> 
