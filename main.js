@@ -1,7 +1,14 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { Unicorn } from './src/unicorn.js';
+
+//mouse tracking
+const mouse = new THREE.Vector2();
+const raycaster = new THREE.Raycaster();
+window.addEventListener('mousemove', (e) => {
+    mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+});
 
 // Scene setup
 const scene = new THREE.Scene();
@@ -9,89 +16,397 @@ scene.background = new THREE.Color(0xE0B0FF); // Mauve/magical purple sky
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
 document.body.appendChild(renderer.domElement);
 
-// Add some basic lighting
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); // Slightly reduced ambient light
 scene.add(ambientLight);
-const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-directionalLight.position.set(10, 20, 10);
-directionalLight.castShadow = true;
+const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
 scene.add(directionalLight);
 
-// Create floating platforms
+const foodItems=[];
+const isFartEffectPending=false; 
+
+const ambientSound=new Audio('./sounds/swan_lake.mp3');
+ambientSound.volume=0.6;
+ambientSound.play();
+
+let boss = null;
+let bossHP = 300;
+let bossProjectiles = [];
+let playerProjectiles = [];
+let bossAttackInterval = 1200;
+let phase2=false;
+let bossHitbox=null;
+
+async function initBossFight() {
+    try {
+        boss = await loadModel(
+            './models/dark_magician.glb',
+            { x: 20, y: 204, z: 0 },  
+            { x: 0, y: -Math.PI/2, z: 0 }, 
+            { x: 3, y: 3, z: 3}
+        );
+        const hitboxGeometry=new THREE.SphereGeometry(3);
+        const hitboxMaterial=new THREE.MeshBasicMaterial({
+            color:0x00FF00,
+            transparent:true,
+            opacity:0.3,
+            visible: false
+        });
+        bossHitbox=new THREE.Mesh(hitboxGeometry,hitboxMaterial);
+        bossHitbox.position.y=8;
+        boss.add(bossHitbox);
+
+        scene.add(bossHitbox);
+        playSoundEffect('./sounds/boss_intro.mp3',0.5);
+        scene.add(boss);
+        createBossHPBar();
+        bossAttackInterval = setInterval(bossAttack, 1200);
+    } catch (error) {
+        console.error('Failed to load boss model:', error);
+    }
+}
+function rotateBossToFacePlayer() {
+    // Calculate direction vector from boss to player
+    const direction = new THREE.Vector3().subVectors(
+        player.position,
+        boss.position
+    ).normalize();
+    
+    // Calculate target rotation (ignore Y-axis for grounded enemies)
+    direction.y = 0;
+    const targetRotation = Math.atan2(direction.x, direction.z);
+    
+    // Smooth rotation using lerp
+    const rotationSpeed = 0.1;
+    boss.rotation.y = THREE.MathUtils.lerp(
+        boss.rotation.y,
+        targetRotation,
+        rotationSpeed
+    );
+    
+    // Optional: Add slight head tilt for more dynamic look
+    if (boss.children[0]) { // Assuming head is first child
+        const headTilt = direction.clone().cross(new THREE.Vector3(0, 1, 0));
+        boss.children[0].rotation.z = headTilt.x * 0.2;
+    }
+}
+
+function createBossHPBar() {
+    const bossHPContainer = document.createElement('div');
+    bossHPContainer.id = 'bossHPContainer';
+    bossHPContainer.style.cssText = `
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 300px;
+        height: 30px;
+        background: rgba(0,0,0,0.7);
+        border-radius: 5px;
+        border: 2px solid #FF0000;
+        z-index: 1000;
+    `;
+    const bossName = document.createElement('div');
+    bossName.textContent = 'EVIL LE BAGUETTE';
+    bossName.style.cssText = `
+        color: #FF0000;
+        font-weight: bold;
+        text-align: center;
+        font-size: 16px;
+        margin-bottom: 2px;
+        text-shadow: 0 0 5px #000;
+    `;
+    bossHPContainer.appendChild(bossName);
+    const bossHPBar = document.createElement('div');
+    bossHPBar.id = 'bossHPBar';
+    bossHPBar.style.cssText = `
+        height: 100%;
+        width: 100%;
+        background: linear-gradient(to right, #FF0000, #FF4500);
+        border-radius: 3px;
+        transition: width 0.3s;
+    `;  
+    bossHPContainer.appendChild(bossHPBar);
+    document.body.appendChild(bossHPContainer);
+}
+
+function updateBossHP() {
+    const bossHPBar = document.getElementById('bossHPBar');
+    if (bossHPBar) {
+        const hpPercent  = (bossHP / 300) * 100;
+        bossHPBar.style.width = `${hpPercent}%`;
+    }
+    if (bossHP <= 150 && !phase2) {
+        phase2 = true;
+        playSoundEffect('./sounds/bill_voiceline2.mp3', 0.8);
+        clearInterval(bossAttackInterval);
+        bossAttackInterval = setInterval(bossAttack, 800);
+    }
+    if (bossHP <= 0) {
+        bossDefeated();
+    }
+}
+
+function bossAttack() {
+    if (!boss || bossHP <= 0) return;  
+    // Create multiple projectiles in phase 2
+    const projectileCount = phase2 ? 3 : 1;
+    
+    for (let i = 0; i < projectileCount; i++) {
+        const projectileGeometry = new THREE.SphereGeometry(2, 16, 16);
+        const projectileMaterial = new THREE.MeshBasicMaterial({ 
+            color: phase2 ? 0xFF0000 : 0x00FF00 
+        });
+        const projectile = new THREE.Mesh(projectileGeometry, projectileMaterial);
+
+        const bossWorldPos = new THREE.Vector3();
+        boss.getWorldPosition(bossWorldPos);
+        projectile.position.copy(bossWorldPos);
+        
+        // Add slight spread to projectiles in phase 2
+        const spread = phase2 ? 0.2 : 0;
+        const direction = new THREE.Vector3().subVectors(
+            player.position, 
+            bossWorldPos
+        ).normalize();
+        direction.x += (Math.random() - 0.5) * spread;
+        direction.z += (Math.random() - 0.5) * spread;
+        
+        projectile.userData = {
+            velocity: direction.multiplyScalar(phase2 ? 0.5 : 0.3),
+            damage: phase2 ? 40 : 25,
+            isBossProjectile: true,
+            createdAt: Date.now()
+        };
+        
+        scene.add(projectile);
+        bossProjectiles.push(projectile);
+        
+        // Auto-remove after 5 seconds
+        setTimeout(() => {
+            if (projectile.parent) {
+                scene.remove(projectile);
+                bossProjectiles = bossProjectiles.filter(p => p !== projectile);
+            }
+        }, 7000);
+    }
+}
+
+function bossDefeated() {
+    playSoundEffect('./sounds/bill_voiceline3.mp3', 0.8);
+    clearInterval(bossAttackInterval);
+    bossProjectiles.forEach(p => scene.remove(p));
+    playerProjectiles.forEach(p => scene.remove(p));
+    bossProjectiles = [];
+    playerProjectiles = [];
+
+    const hpBar = document.getElementById('bossHPContainer');
+    if (hpBar) hpBar.remove(); 
+    showVictoryMessage();
+}
+
+function showVictoryMessage() {
+    const victoryMessage = showMessageBox(
+        "You defeated Le Baguette! The villagers are freed from the curse!",
+        true
+    );
+    setTimeout(() => {
+        removeMessageBox(victoryMessage);
+    }, 2000);
+}
+
+let canAttack=true;
+let attackCooldown=1500;
+
+function playerAttack() {
+    if(!canAttack) return;
+    updateFartUI();
+    const projectileGeometry = new THREE.SphereGeometry(2, 10, 10);
+    const projectileMaterial = new THREE.MeshBasicMaterial({ color: 0xFF69B4 });
+    const projectile = new THREE.Mesh(projectileGeometry, projectileMaterial);
+    // Calculate position in front of the player
+    const headOffset = new THREE.Vector3(0, 1.5, 0);
+    projectile.position.copy(player.position).add(headOffset);  
+    raycaster.setFromCamera(mouse,camera);
+    const direction = raycaster.ray.direction.clone(); // Calculate direction based on player's rotation
+    direction.normalize(); 
+    projectile.userData = {
+        velocity: direction.multiplyScalar(0.5),  // Increased speed
+        damage: 25,
+        isBossProjectile: false,
+        createdAt: Date.now()
+    };
+    scene.add(projectile);
+    playerProjectiles.push(projectile);
+    
+    canAttack=false;
+    setTimeout(() => {
+        canAttack=true;
+    }, attackCooldown);
+    // Auto-remove after 10 seconds if it doesn't hit anything
+    setTimeout(() => {
+        if (projectile.parent) {
+            scene.remove(projectile);
+            playerProjectiles = playerProjectiles.filter(p => p !== projectile);
+        }
+    }, 10000);
+}
+
+let currentSound=null;
+function playSoundEffect(effectFile,volume=1.0) {
+    if (!effectFile) return;
+
+    if (currentSound) {
+        currentSound.pause();
+        currentSound.currentTime = 0;
+    }
+
+    ambientSound.pause();   
+    const soundEffect = new Audio(effectFile);
+    soundEffect.volume = volume;
+    soundEffect.play();
+    currentSound=soundEffect;
+
+    soundEffect.onended = () => {
+      ambientSound.play();
+      currentSound=null;
+    };
+    return soundEffect;
+  }
+// Add secondary fill light for better depth
+const fillLight = new THREE.DirectionalLight(0xE0B0FF, 0.3); // Purple tinted fill light
+fillLight.position.set(-10, 15, -10);
+scene.add(fillLight);
+
+// Create floating platforms with enhanced materials
 const platforms = [];
 const createPlatform = (x, y, z, width, depth) => {
     const geometry = new THREE.BoxGeometry(width, 1, depth);
     const material = new THREE.MeshStandardMaterial({ 
         color: 0x90EE90,  // Light green
-        roughness: 0.7,
-        metalness: 0.1
+        roughness: 0.8,   // Increased roughness
+        metalness: 0.2,   // Slight metalness
+        flatShading: true // Enable flat shading for more detail
     });
     const platform = new THREE.Mesh(geometry, material);
     platform.position.set(x, y, z);
-    platform.receiveShadow = true;
-    platform.castShadow = true;
+
+    // Add subtle grass effect
+    const grassGeometry = new THREE.PlaneGeometry(width, depth);
+    const grassMaterial = new THREE.MeshStandardMaterial({
+        color: 0x3CB371,  // Medium sea green
+        roughness: 0.9,
+        metalness: 0.1,
+        side: THREE.DoubleSide
+    });
+    const grass = new THREE.Mesh(grassGeometry, grassMaterial);
+    grass.rotation.x = -Math.PI / 2;
+    grass.position.y = 0.51; // Slightly above platform
+    platform.add(grass);
 
     scene.add(platform);
     platforms.push(platform);
     return platform;
 };
 
-// Create clouds
+function createIceRink(x, y, z, size = 15) {
+    const rink = new THREE.Group();
+    
+    // Solid white ice surface
+    const iceGeometry = new THREE.BoxGeometry(size, 0.8, size);
+    const iceMaterial = new THREE.MeshStandardMaterial({
+        color: 0xFFFFFF, // Pure white ice
+        roughness: 0.3,  // Slight roughness for realism
+        metalness: 0.1   // Low metalness to avoid reflections
+    });
+    const ice = new THREE.Mesh(iceGeometry, iceMaterial);
+    ice.position.set(x, y, z); // Place directly on the ground
+    rink.add(ice);
+
+    // Border walls
+    const wallHeight = 1;
+    const wallMaterial = new THREE.MeshStandardMaterial({
+        color: 0xFFFFFF, // White walls
+        roughness: 0.3,
+        metalness: 0.2
+    });
+
+    // Create 4 walls around the rink
+    const walls = [
+        { position: [x, y + wallHeight / 2, z - size / 2], size: [size, wallHeight, 0.2] }, // North
+        { position: [x, y + wallHeight / 2, z + size / 2], size: [size, wallHeight, 0.2] }, // South
+        { position: [x - size / 2, y + wallHeight / 2, z], size: [0.2, wallHeight, size] }, // West
+        { position: [x + size / 2, y + wallHeight / 2, z], size: [0.2, wallHeight, size] }  // East
+    ];
+    walls.forEach(wall => {
+        const wallGeometry = new THREE.BoxGeometry(...wall.size);
+        const wallMesh = new THREE.Mesh(wallGeometry, wallMaterial);
+        wallMesh.position.set(...wall.position);
+        rink.add(wallMesh);
+    });
+
+    return rink;
+}
+// Enhanced cloud creation with more detail
 function createCloud(x, y, z) {
     const cloud = new THREE.Group();
     const cloudMaterial = new THREE.MeshStandardMaterial({
         color: 0xffffff,
         transparent: true,
-        opacity: 0.9,  // Increased opacity
-        roughness: 0.8,  // Increased roughness for more matte look
-        metalness: 0.1   // Added slight metalness for better light interaction
+        opacity: 0.9,
+        roughness: 0.9,  // Increased roughness
+        metalness: 0.1,
     });
-
-    // Create a flatter, more natural cloud shape
+    // Create more varied cloud shapes
     const baseShape = new THREE.SphereGeometry(2, 8, 8);
-    baseShape.scale(1, 0.3, 1);  // Flatten the spheres
+    baseShape.scale(1, 0.3, 1);
     
-    // Create main body of the cloud
+    // Main cloud body with more detail
     const mainCloud = new THREE.Mesh(baseShape, cloudMaterial);
     cloud.add(mainCloud);
 
-    // Add smaller sections to create natural cloud shape
-    const numSections = Math.floor(Math.random() * 4) + 3;
+    // Add more varied sections for natural look
+    const numSections = Math.floor(Math.random() * 5) + 4; // More sections
     for (let i = 0; i < numSections; i++) {
         const section = new THREE.Mesh(baseShape, cloudMaterial);
         
-        // Position sections to create elongated cloud shape
-        section.position.x = (Math.random() - 0.5) * 3;
-        section.position.y = (Math.random() - 0.5) * 0.2;  // Very small Y variation
-        section.position.z = (Math.random() - 0.5) * 2;
+        // More varied positioning
+        section.position.x = (Math.random() - 0.5) * 4;
+        section.position.y = (Math.random() - 0.5) * 0.5; // More vertical variation
+        section.position.z = (Math.random() - 0.5) * 3;
         
-        // Random scale for variety
-        const scale = Math.random() * 0.5 + 0.5;
+        // More varied scaling
+        const scale = Math.random() * 0.6 + 0.4;
         section.scale.set(scale, scale * 0.3, scale);
+        
+        // Random rotation for more natural look
+        section.rotation.x = Math.random() * Math.PI;
+        section.rotation.y = Math.random() * Math.PI;
+        section.rotation.z = Math.random() * Math.PI;
         
         cloud.add(section);
     }
 
     cloud.position.set(x, y, z);
-    // Random rotation for variety
     cloud.rotation.y = Math.random() * Math.PI * 2;
     return cloud;
 }
-
-// Add clouds to the scene
+// Add more clouds with varied heights and sizes
 const clouds = [];
 for (let i = 0; i < 30; i++) {  // Increased number of clouds
-    const x = Math.random() * 120 - 60;  // Wider spread
-    const y = Math.random() * 40 + 10;   // Higher altitude range
-    const z = Math.random() * 120 - 60;  // Wider spread
+    const x = Math.random() * 120 - 60;
+    const y = Math.random() * 50 + 10;   // More varied heights
+    const z = Math.random() * 120 - 60;
     const cloud = createCloud(x, y, z);
+    cloud.scale.set(
+        Math.random() * 0.5 + 0.5,  // Random scale for each cloud
+        Math.random() * 0.5 + 0.5,
+        Math.random() * 0.5 + 0.5
+    );
     scene.add(cloud);
     clouds.push(cloud);
 }
-
 // Create decorative elements
 function createTree(x, z) {
     const tree = new THREE.Group();
@@ -116,62 +431,16 @@ function createTree(x, z) {
     tree.position.set(x, 1, z);
     return tree;
 }
-
-function createHill(x, z, radius, height) {
-    const segments = 32;
-    const hillGeometry = new THREE.BufferGeometry();
-    const vertices = [];
-    const indices = [];
-
-    // Create vertices
-    for (let i = 0; i <= segments; i++) {
-        for (let j = 0; j <= segments; j++) {
-            const u = i / segments;
-            const v = j / segments;
-            const theta = u * Math.PI * 2;
-            const phi = v * radius;
-
-            const x = Math.cos(theta) * phi;
-            const y = Math.exp(-phi * phi / (radius * radius)) * height;
-            const z = Math.sin(theta) * phi;
-
-            vertices.push(x, y, z);
-        }
-    }
-
-    // Create indices
-    for (let i = 0; i < segments; i++) {
-        for (let j = 0; j < segments; j++) {
-            const a = i * (segments + 1) + j;
-            const b = a + 1;
-            const c = a + (segments + 1);
-            const d = c + 1;
-
-            indices.push(a, b, c);
-            indices.push(b, d, c);
-        }
-    }
-
-    hillGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-    hillGeometry.setIndex(indices);
-    hillGeometry.computeVertexNormals();
-
-    const hillMaterial = new THREE.MeshStandardMaterial({
-        color: 0x90EE90,
-        roughness: 0.8
-    });
-
-    const hill = new THREE.Mesh(hillGeometry, hillMaterial);
-    hill.position.set(x, 0, z);
-    hill.castShadow = true;
-    hill.receiveShadow = true;
-    return hill;
-}
-
-// Create a small house
+const ground = createPlatform(0, 0, 0, 50, 50);  // Keep only the ground platform
+const iceRink = createIceRink(8, 0.2, 6, 15); // Slightly above ground
+scene.add(iceRink);
+// Add to scene during initialization
+const skyPlatform = createPlatform(0,200,0,200,50);
+scene.add(skyPlatform);
+platforms.push(skyPlatform); // Add to collision detection
+//create a small house
 function createHouse(x, y, z, rotation = 0) {
     const house = new THREE.Group();
-
     // House base
     const baseGeometry = new THREE.BoxGeometry(3, 2.5, 3);
     const baseMaterial = new THREE.MeshStandardMaterial({
@@ -180,7 +449,6 @@ function createHouse(x, y, z, rotation = 0) {
     });
     const base = new THREE.Mesh(baseGeometry, baseMaterial);
     house.add(base);
-
     // Roof
     const roofGeometry = new THREE.ConeGeometry(2.5, 2, 4);
     const roofMaterial = new THREE.MeshStandardMaterial({
@@ -228,7 +496,6 @@ function createHouse(x, y, z, rotation = 0) {
 // Create a petrified villager
 function createPetrifiedVillager(x, y, z, rotation = 0) {
     const villager = new THREE.Group();
-
     // Crystal material for petrified effect
     const crystalMaterial = new THREE.MeshStandardMaterial({
         color: 0xB0C4DE,  // Light steel blue
@@ -310,9 +577,6 @@ function createWall(x, z, width, height = 2.5, rotation = 0) {  // Changed defau
 
     wall.position.set(x, height / 2, z);
     wall.rotation.y = rotation;
-    wall.castShadow = true;
-    wall.receiveShadow = true;
-
     // Add collision box data
     wall.userData = {
         isWall: true,
@@ -323,10 +587,6 @@ function createWall(x, z, width, height = 2.5, rotation = 0) {  // Changed defau
 
     return wall;
 }
-
-// Create ground platform
-const ground = createPlatform(0, 0, 0, 50, 50);  // Keep only the ground platform
-
 // Add decorative walls around the ground
 const walls = [
     // North wall (with opening for entrance)
@@ -339,19 +599,17 @@ const walls = [
     // West wall
     createWall(-25, 0, 50, 2.5, Math.PI / 2)  // Changed height to 2.5
 ];
-
 walls.forEach(wall => scene.add(wall));
-
 // Add village to the starting area
 const village = new THREE.Group();
-
 // Add houses
 const houses = [
     { x: -12, z: -12, rotation: Math.PI / 6 },    // Moved further out
     { x: -5, z: -8, rotation: -Math.PI / 4 },     // Adjusted position
     { x: -9, z: -3, rotation: Math.PI / 3 },      // Moved slightly
     { x: -3, z: -12, rotation: Math.PI / 5 },     // Moved further out
-    { x: -15, z: -6, rotation: -Math.PI / 3 }     // Moved further out
+    { x: -15, z: -6, rotation: -Math.PI / 3 },     // Moved further out
+    { x: 12, z: -12, rotation: Math.PI / 6 }     // Moved further out
 ];
 
 houses.forEach(({ x, z, rotation }) => {
@@ -367,14 +625,24 @@ const villagers = [
     { x: -6, z: -4, rotation: -Math.PI / 4 },     // Adjusted position
     { x: -11, z: -8, rotation: Math.PI / 5 },     // Spread out
     { x: -3, z: -6, rotation: -Math.PI / 2 },     // Kept position
-    { x: -10, z: -3, rotation: Math.PI / 6 }      // Adjusted position
+    { x: -10, z: -3, rotation: Math.PI / 6 },     // Adjusted position
+    { x: -12, z: -12, rotation: Math.PI / 6 },    // Moved further out
+    { x: -21, z: -8, rotation: Math.PI / 5 },
+    { x: 8, z: 9, rotation: Math.PI / 6 },    // Moved further out
+    { x: -17, z: -12, rotation: Math.PI / 6 },    // Moved further out
+    { x: 21, z: -15, rotation: Math.PI / 6 },    // Moved further out
+    { x: -17, z: -7, rotation: Math.PI / 6 },    // Moved further out
+    { x: 26, z: -4, rotation: Math.PI / 6 },    // Moved further out
+    { x: -20, z: -20, rotation: Math.PI / 6 },    // Moved further out
+    { x: 8, z: 6, rotation: Math.PI / 6 },    // Moved further out
+    { x: 7, z: 8, rotation: Math.PI / 2 },    // Moved further out
+    { x: 6, z: 6, rotation: Math.PI / 3 },    // Moved further out
 ];
 
 villagers.forEach(({ x, z, rotation }) => {
     const villager = createPetrifiedVillager(x, 0.5, z, rotation);  // Keep height at 0.5
     village.add(villager);
 });
-
 scene.add(village);
 
 // Add more trees around the village and starting area
@@ -504,6 +772,11 @@ function createPortal() {
     portal.position.set(0, 30, 0);
     portal.rotation.x = Math.PI / 2;
     portal.visible = false;  // Start invisible
+
+    portal.userData = {
+        isFinalPortal: false,
+        glowIntensity: 1.0
+      };
     scene.add(portal);
     return portal;
 }
@@ -531,8 +804,8 @@ camera.position.set(0, 5, 10);
 camera.lookAt(player.position);
 
 // Camera follow parameters
-const cameraOffset = new THREE.Vector3(0, 10, 22);
-const cameraLookOffset = new THREE.Vector3(0, 1.8, 0);
+const cameraOffset = new THREE.Vector3(0, 12, 26);
+const cameraLookOffset = new THREE.Vector3(0, 2, 0);
 const cameraSmoothness = 0.1;
 let cameraRotation = 0;
 
@@ -566,7 +839,11 @@ window.addEventListener('mousemove', (event) => {
         lastMouseY = event.clientY;
     }
 });
-
+window.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() === 'f' ) {
+        playerAttack();
+    }
+});
 // Physics variables
 const gravity = 0.005;  // Reduced from 0.015 to 0.005
 const maxFallSpeed = 0.2;  // Reduced from 0.5 to 0.2
@@ -612,7 +889,7 @@ window.addEventListener('resize', () => {
 });
 
 // HP System
-const maxHP = 100;
+const maxHP = 150;
 let currentHP = maxHP;
 const hpBar = document.getElementById('hpFill');
 const hpText = document.getElementById('hpText');
@@ -649,13 +926,10 @@ function checkCollisions() {
     platforms.forEach(platform => {
         const platformWorldPos = new THREE.Vector3();
         platform.getWorldPosition(platformWorldPos);
-        
         const playerBottom = player.position.y - 1;
         const playerTop = player.position.y + 1;
         const platformTop = platformWorldPos.y + 0.5;
         const platformBottom = platformWorldPos.y - 0.5;
-        
-        // Get platform dimensions from geometry
         const width = platform.geometry.parameters.width;
         const depth = platform.geometry.parameters.depth;
         
@@ -676,9 +950,53 @@ function checkCollisions() {
                 velocity.y = 0;
             }
         }
+        return onPlatform;
     });
 
-    // Check castle wall collisions with improved response
+    // Check castle and tower collisions
+    scene.traverse(function(object) {
+        if (object.userData && object.userData.collisionBox) {
+            const box = object.userData.collisionBox;
+            const playerBox = new THREE.Box3(
+                new THREE.Vector3(player.position.x - 1, player.position.y - 2, player.position.z - 1),
+                new THREE.Vector3(player.position.x + 1, player.position.y + 2, player.position.z + 1)
+            );
+
+            if (playerBox.intersectsBox(box)) {
+                // Calculate collision response
+                const prevX = player.position.x - velocity.x;
+                const prevZ = player.position.z - velocity.z;
+                const prevY = player.position.y - velocity.y;
+
+                // Determine which side was hit
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+
+                // Check X-axis collision
+                if (prevX < center.x - size.x/2 || prevX > center.x + size.x/2) {
+                    player.position.x = prevX;
+                    velocity.x = 0;
+                }
+
+                // Check Z-axis collision
+                if (prevZ < center.z - size.z/2 || prevZ > center.z + size.z/2) {
+                    player.position.z = prevZ;
+                    velocity.z = 0;
+                }
+
+                // Check Y-axis collision
+                if (prevY < center.y - size.y/2 || prevY > center.y + size.y/2) {
+                    player.position.y = prevY;
+                    velocity.y = 0;
+                    if (prevY < center.y) {
+                        onPlatform = true;
+                    }
+                }
+            }
+        }
+    });
+
+    // Check wall collisions with improved response
     scene.traverse(function(object) {
         if (object.userData && object.userData.isWall) {
             const wallWorldPos = new THREE.Vector3();
@@ -688,34 +1006,34 @@ function checkCollisions() {
             const height = object.userData.height;
             const depth = object.userData.depth;
 
-            // Calculate bounds with world position
-            const minX = wallWorldPos.x - width / 2;
-            const maxX = wallWorldPos.x + width / 2;
-            const minY = wallWorldPos.y - height / 2;
-            const maxY = wallWorldPos.y + height / 2;
-            const minZ = wallWorldPos.z - depth / 2;
-            const maxZ = wallWorldPos.z + depth / 2;
+            // Calculate bounds with world position and increased collision area
+            const minX = wallWorldPos.x - width / 2 - 1;  // Added padding
+            const maxX = wallWorldPos.x + width / 2 + 1;
+            const minY = wallWorldPos.y - height / 2 - 1;
+            const maxY = wallWorldPos.y + height / 2 + 1;
+            const minZ = wallWorldPos.z - depth / 2 - 1;
+            const maxZ = wallWorldPos.z + depth / 2 + 1;
 
             // Previous position for better collision response
             const prevX = player.position.x - velocity.x;
             const prevY = player.position.y - velocity.y;
             const prevZ = player.position.z - velocity.z;
 
-            // Check if player is within bounds
-            if (player.position.x > minX - 0.5 && player.position.x < maxX + 0.5 &&
-                player.position.y > minY - 0.5 && player.position.y < maxY + 0.5 &&
-                player.position.z > minZ - 0.5 && player.position.z < maxZ + 0.5) {
+            // Check if player is within bounds with increased collision area
+            if (player.position.x > minX && player.position.x < maxX &&
+                player.position.y > minY && player.position.y < maxY &&
+                player.position.z > minZ && player.position.z < maxZ) {
 
                 // Determine which side was hit by checking previous position
-                if (prevX <= minX - 0.5 || prevX >= maxX + 0.5) {
+                if (prevX <= minX || prevX >= maxX) {
                     player.position.x = prevX;
                     velocity.x = 0;
                 }
-                if (prevZ <= minZ - 0.5 || prevZ >= maxZ + 0.5) {
+                if (prevZ <= minZ || prevZ >= maxZ) {
                     player.position.z = prevZ;
                     velocity.z = 0;
                 }
-                if (prevY <= minY - 0.5 || prevY >= maxY + 0.5) {
+                if (prevY <= minY || prevY >= maxY) {
                     player.position.y = prevY;
                     velocity.y = 0;
                     if (prevY < wallWorldPos.y) {
@@ -725,7 +1043,6 @@ function checkCollisions() {
             }
         }
     });
-
     // Check collectible collisions
     let allCrystalsCollected = true;
     collectibles.forEach((collectible, index) => {
@@ -756,10 +1073,7 @@ function checkCollisions() {
     if (player.position.y < -50) {  // Changed from -10 to -50
         takeDamage(currentHP); // Kill player if they fall off the map
     }
-
-    return onPlatform;
-}
-
+  }
 // Inventory System
 const inventory = {
     wings: {
@@ -805,7 +1119,26 @@ const inventory = {
                 tutorial.style.display = 'none';
             }
         }
-    }
+    },
+    magicalFart: {
+        active: true,
+        name: "Magical Fart",
+        charges: 10000,
+        toggle: function() {
+            const slot = document.querySelector('.inventory-slot[data-item="fart"]');
+            const tooltip = slot.querySelector('.item-tooltip');
+            slot.classList.add('active');  // Always show as active
+            tooltip.textContent = `${this.name} (Active) - Unlimited charges`;
+        },
+        updateUI: function() {
+            const slot = document.querySelector('.inventory-slot[data-item="fart"]');
+            if (slot) {
+                const tooltip = slot.querySelector('.item-tooltip');
+                slot.classList.add('active');
+                tooltip.textContent = `${this.name} (Active) - Unlimited charges`;
+            }
+        }
+    }   
 };
 
 // Add tooltip and click functionality
@@ -832,7 +1165,11 @@ document.querySelectorAll('.inventory-slot').forEach(slot => {
 document.getElementById('tutorial-close').addEventListener('click', () => {
     document.getElementById('tutorial').style.display = 'none';
 });
-
+// Remove intro message after animation completes
+setTimeout(() => {
+    const intro = document.getElementById('intro-message');
+    if (intro) intro.remove();
+  }, 12000); 
 // Create magical sparkle effect
 function createSparkleEffect() {
     const sparkleGeometry = new THREE.BufferGeometry();
@@ -929,11 +1266,11 @@ function animate() {
             Math.cos(cameraRotation + Math.PI / 2)
         );
 
-        // Add movement based on key presses
-        if (keys.s) moveVector.add(forward);     // S now moves forward
-        if (keys.w) moveVector.sub(forward);     // W now moves backward
-        if (keys.d) moveVector.add(right);       // Keep D for right
-        if (keys.a) moveVector.sub(right);       // Keep A for left
+        // Add movement based on key presses (reverted to original)
+        if (keys.s) moveVector.add(forward);     // S moves forward
+        if (keys.w) moveVector.sub(forward);     // W moves backward
+        if (keys.d) moveVector.add(right);       // D moves right
+        if (keys.a) moveVector.sub(right);       // A moves left
 
         // Normalize movement vector to maintain consistent speed in all directions
         if (moveVector.length() > 0) {
@@ -941,7 +1278,7 @@ function animate() {
             moveVector.multiplyScalar(moveSpeed);
             
             // Update player rotation to face movement direction
-            player.rotation.y = Math.atan2(moveVector.x, moveVector.z);
+            player.rotation.y = Math.atan2(moveVector.x, moveVector.z)-Math.PI/2;
             
             // Apply movement
             velocity.x = moveVector.x;
@@ -1003,6 +1340,20 @@ function animate() {
     const lookAtPosition = player.position.clone().add(cameraLookOffset);
     camera.lookAt(lookAtPosition);
 
+    //food animation
+    let nearFood = false;
+    foodItems.forEach(item => {
+        if(isPlayerNear(item)){
+            nearFood = true;
+        }
+    });
+    const prompt = document.getElementById('eatPrompt');
+    if(nearFood && !prompt){
+        showEatPrompt();
+    }else if(!nearFood && prompt){
+        prompt.remove();
+    }
+
     // Animate portal
     if (portal.visible) {
         portal.rotation.z += 0.01;
@@ -1011,7 +1362,18 @@ function animate() {
         portal.scale.y = 1 + Math.sin(Date.now() * 0.001) * 0.1;
         portal.scale.z = 1 + Math.sin(Date.now() * 0.001) * 0.1;
     }
-
+    else if (portal.visible && portal.userData.isFinalPortal) {
+        portal.rotation.z += 0.02;
+        portal.scale.x = 3 + Math.sin(Date.now() * 0.005) * 0.5;
+        portal.scale.y = 3 + Math.cos(Date.now() * 0.005) * 0.5;
+        // Pulsing glow effect
+        portal.children[0].material.emissiveIntensity = 
+          Math.abs(Math.sin(Date.now() * 0.002)) * 2;
+      }
+      if(boss && bossHP > 0) {
+        rotateBossToFacePlayer();
+        updateProjectiles();
+      }
     // Render scene
     renderer.render(scene, camera);
 }
@@ -1019,6 +1381,66 @@ function animate() {
 // Start animation
 animate();
 
+function updateProjectiles() {
+    // Update boss projectiles
+    for (let i = bossProjectiles.length - 1; i >= 0; i--) {
+        const projectile = bossProjectiles[i];
+        projectile.position.add(projectile.userData.velocity);
+
+        if (projectile.position.distanceTo(player.position) < 1.5) {
+            takeDamage(projectile.userData.damage);
+            scene.remove(projectile);
+            bossProjectiles.splice(i, 1);
+            continue;
+        }
+        if (Date.now() - projectile.userData.createdAt > 10000) {
+            scene.remove(projectile);
+            playerProjectiles.splice(i, 1);
+        }
+    }
+    for (let i = playerProjectiles.length - 1; i >= 0; i--) {
+        const projectile = playerProjectiles[i];
+        projectile.position.add(projectile.userData.velocity);
+        // Check collision with boss
+        if (boss && bossHP > 0) {
+            const bossHitboxPos = boss.position.clone();
+            bossHitboxPos.y += 8; // Match the hitbox offset
+            const bossHitbox = new THREE.Sphere(bossHitboxPos, 3);
+            const projectileHitbox = new THREE.Sphere(projectile.position.clone(), 1);
+            
+            if (bossHitbox.intersectsSphere(projectileHitbox)) {
+                bossHP -= projectile.userData.damage;
+                updateBossHP(); // This will handle the HP check and phase transitions
+                scene.remove(projectile);
+                playerProjectiles.splice(i, 1);
+                createHitEffect(boss.position);
+                continue;
+            }
+        }
+        // Remove old projectiles
+        if (Date.now() - projectile.userData.createdAt > 10000) {
+            scene.remove(projectile);
+            playerProjectiles.splice(i, 1);
+        }
+    }
+}
+function createHitEffect(position) {
+    // Create a quick flash effect
+    const hitGeometry = new THREE.SphereGeometry(2, 8, 8);
+    const hitMaterial = new THREE.MeshBasicMaterial({
+        color: 0xFF0000,
+        transparent: true,
+        opacity: 0.7
+    });
+    const hitEffect = new THREE.Mesh(hitGeometry, hitMaterial);
+    hitEffect.position.copy(position);
+    scene.add(hitEffect);
+    
+    // Auto-remove after short time
+    setTimeout(() => {
+        scene.remove(hitEffect);
+    }, 200);
+}
 // Tutorial System
 const tutorial = {
     currentStep: 0,
@@ -1073,7 +1495,6 @@ const tutorial = {
             setTimeout(() => this.init(), 100);
             return;
         }
-
         this.totalCrystals = collectibles.length;
         document.getElementById('total-crystals').textContent = this.totalCrystals;
         document.getElementById('crystals-collected').textContent = this.crystalsCollected;
@@ -1165,7 +1586,7 @@ function showQuizPrompt() {
     message.style.background = 'rgba(0, 0, 0, 0.8)';
     message.style.color = 'white';
     message.style.padding = '20px';
-    message.style.borderRadius = '10px';
+    message.style.borderRadius = '10px';s
     message.style.textAlign = 'center';
     message.style.zIndex = '1000';
     message.innerHTML = 'A magical portal has appeared in the sky!<br>Fly through it to begin your magical quiz!';
@@ -1249,12 +1670,11 @@ function showQuizBox() {
                 document.body.appendChild(successMessage);
                 successMessage.onclick = () => {
                     successMessage.remove();
-                    // Teleport player high above the castle
-                    player.position.set(0, 150, 0);  // Positioned 50 units above the castle (castle is at y=100)
+                    player.position.set(-70, 124, 0);  // Positioned on the left platform
                     velocity.set(0, 0, 0);  // Reset velocity
-                    // Position camera behind and above player, looking down at castle
+                    // Position camera behind and above player, looking at castle
                     cameraRotation = Math.PI;  // Face the castle
-                    camera.position.set(0, 155, 10);  // Position camera slightly behind and above player
+                    camera.position.set(-70, 125, 20);  // Position camera slightly behind and above player
                     camera.lookAt(new THREE.Vector3(0, 100, 0));  // Look at castle center
                 };
             } else {
@@ -1284,31 +1704,26 @@ function showQuizBox() {
 
 // Create a styled message box
 function showMessageBox(message, isSparkly = false) {
-    // Remove any existing message boxes
-    const existingMessages = document.querySelectorAll('[id$="Message"]');
-    existingMessages.forEach(msg => msg.remove());
-
-    const messageBox = document.createElement('div');
-    messageBox.style.position = 'fixed';
-    messageBox.style.top = '50%';
-    messageBox.style.left = '50%';
-    messageBox.style.transform = 'translate(-50%, -50%)';
-    messageBox.style.background = 'rgba(0, 0, 0, 0.9)';
-    messageBox.style.color = 'white';
-    messageBox.style.padding = '30px';
-    messageBox.style.borderRadius = '15px';
-    messageBox.style.textAlign = 'center';
-    messageBox.style.minWidth = '400px';
-    messageBox.style.cursor = 'pointer';
-    messageBox.style.fontFamily = 'Arial, sans-serif';
-    messageBox.style.zIndex = '1000';
-    messageBox.style.border = '2px solid #FF8C00';
-    messageBox.style.animation = 'fadeIn 0.5s ease-in';
+    const box = document.createElement('div');
+    box.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0,0,0,0.9);
+        color: white;
+        padding: 30px;
+        border-radius: 15px;
+        text-align: center;
+        min-width: 400px;
+        cursor: pointer;
+        z-index: 1001;
+        border: 2px solid #FF8C00;
+        font-family: Arial, sans-serif;
+    `;
 
     if (isSparkly) {
-        messageBox.style.background = 'linear-gradient(45deg, rgba(0,0,0,0.9), rgba(75,0,130,0.9))';
-        messageBox.style.boxShadow = '0 0 20px #FF69B4';
-        messageBox.innerHTML = `
+        box.innerHTML = `
             <style>
                 @keyframes sparkle {
                     0% { text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 30px #FF69B4; }
@@ -1324,378 +1739,90 @@ function showMessageBox(message, isSparkly = false) {
             <p style="margin-top: 20px; font-size: 14px;">(Click to continue)</p>
         `;
     } else {
-        messageBox.innerHTML = `
+        box.innerHTML = `
             <h2 style="color: #FF8C00; margin-bottom: 20px;">${message}</h2>
             <p style="margin-top: 20px; font-size: 14px;">(Click to continue)</p>
         `;
     }
 
-    return messageBox;
+    document.body.appendChild(box);
+    return box;
 }
 
 // Create a castle for Cloud Kingdom
 async function createCastle() {
     const castle = new THREE.Group();
 
-    // Main castle body - now with thicker walls
-    const wallThickness = 4;  // Increased wall thickness
-    
-    // Create walls separately for proper collision
-    const walls = [
-        // Front wall (with large opening)
-        {
-            geometry: new THREE.BoxGeometry(15, 30, wallThickness),  // Left section
-            position: { x: -17.5, y: 15, z: 25 }
-        },
-        {
-            geometry: new THREE.BoxGeometry(15, 30, wallThickness),  // Right section
-            position: { x: 17.5, y: 15, z: 25 }
-        },
-        {
-            geometry: new THREE.BoxGeometry(50, 10, wallThickness),  // Top section
-            position: { x: 0, y: 25, z: 25 }
-        },
-        // Back wall
-        {
-            geometry: new THREE.BoxGeometry(50, 30, wallThickness),
-            position: { x: 0, y: 15, z: -25 }
-        },
-        // Left wall
-        {
-            geometry: new THREE.BoxGeometry(wallThickness, 30, 50),
-            position: { x: -25, y: 15, z: 0 }
-        },
-        // Right wall
-        {
-            geometry: new THREE.BoxGeometry(wallThickness, 30, 50),
-            position: { x: 25, y: 15, z: 0 }
-        },
-        // Top wall (roof)
-        {
-            geometry: new THREE.BoxGeometry(50, wallThickness, 50),
-            position: { x: 0, y: 30, z: 0 }
-        }
-    ];
-
-    const stoneMaterial = new THREE.MeshStandardMaterial({
-        color: 0xFF69B4,  // Hot pink
-        metalness: 0.5,
-        roughness: 0.7,
-        emissive: 0xFF1493,
-        emissiveIntensity: 0.2
-    });
-
-    // Add each wall with collision
-    walls.forEach(wall => {
-        const mesh = new THREE.Mesh(wall.geometry, stoneMaterial);
-        mesh.position.set(wall.position.x, wall.position.y, wall.position.z);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        mesh.userData = {
-            isWall: true,
-            width: wall.geometry.parameters.width + 1,  // Added buffer to collision
-            height: wall.geometry.parameters.height + 1,
-            depth: wall.geometry.parameters.depth + 1
-        };
-        castle.add(mesh);
-    });
-
-    // Add interior floor - make it part of the platforms array for consistent physics
-    const floorGeometry = new THREE.BoxGeometry(48, 1, 48);
-    const floorMaterial = new THREE.MeshStandardMaterial({
-        color: 0xFF69B4,
-        metalness: 0.3,
-        roughness: 0.8
-    });
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-    floor.position.set(0, 1, 0);
-    floor.receiveShadow = true;
-    castle.add(floor);
-    platforms.push(floor);  // Add to platforms array for consistent collision
-
-    // Add interior decorative columns
-    const columnPositions = [
-        { x: -20, z: -20 }, { x: 20, z: -20 },
-        { x: -20, z: 20 }, { x: 20, z: 20 }
-    ];
-
-    columnPositions.forEach(pos => {
-        const columnGeometry = new THREE.CylinderGeometry(2, 2, 28, 8);
-        const column = new THREE.Mesh(columnGeometry, stoneMaterial);
-        column.position.set(pos.x, 14, pos.z);
-        column.castShadow = true;
-        column.receiveShadow = true;
-        column.userData = {
-            isWall: true,
-            width: 5,  // Wider collision for columns
-            height: 28,
-            depth: 5
-        };
-        castle.add(column);
-    });
-
-    // Add windows
-    const windowMaterial = new THREE.MeshStandardMaterial({
-        color: 0x00BFFF,
-        metalness: 0.8,
-        roughness: 0.2,
-        emissive: 0x1E90FF,
-        emissiveIntensity: 0.8
-    });
-
-    const windowPositions = [-18, 18];
-    const windowHeights = [10, 20];
-
-    windowPositions.forEach(x => {
-        windowHeights.forEach(y => {
-            // Front windows
-            const windowGeometry = new THREE.BoxGeometry(4, 8, wallThickness + 0.5);
-            const window1 = new THREE.Mesh(windowGeometry, windowMaterial);
-            window1.position.set(x, y, 25);
-            window1.userData = { 
-                isWall: true,
-                width: 5,  // Wider collision for windows
-                height: 9,
-                depth: wallThickness + 1.5
-            };
-            castle.add(window1);
-
-            // Back windows
-            const window2 = new THREE.Mesh(windowGeometry, windowMaterial);
-            window2.position.set(x, y, -25);
-            window2.userData = { 
-                isWall: true,
-                width: 5,
-                height: 9,
-                depth: wallThickness + 1.5
-            };
-            castle.add(window2);
-
-            // Side windows
-            const sideWindowGeometry = new THREE.BoxGeometry(wallThickness + 0.5, 8, 4);
-            const window3 = new THREE.Mesh(sideWindowGeometry, windowMaterial);
-            window3.position.set(25, y, x);
-            window3.userData = { 
-                isWall: true,
-                width: wallThickness + 1.5,
-                height: 9,
-                depth: 5
-            };
-            castle.add(window3);
-
-            const window4 = new THREE.Mesh(sideWindowGeometry, windowMaterial);
-            window4.position.set(-25, y, x);
-            window4.userData = { 
-                isWall: true,
-                width: wallThickness + 1.5,
-                height: 9,
-                depth: 5
-            };
-            castle.add(window4);
+    try {
+        // Load the castle model
+        const castleLoader = new GLTFLoader();
+        const castleGLTF = await new Promise((resolve, reject) => {
+            castleLoader.load(
+                './models/Castle BLEND.glb',
+                resolve,
+                undefined,
+                reject
+            );
         });
-    });
-
-    // Add corner towers
-    const towerPositions = [
-        { x: -25, z: -25 },
-        { x: 25, z: -25 },
-        { x: -25, z: 25 },
-        { x: 25, z: 25 }
-    ];
-
-    towerPositions.forEach(pos => {
-        // Tower base
-        const towerGeometry = new THREE.CylinderGeometry(6, 6, 40, 8);
-        const tower = new THREE.Mesh(towerGeometry, stoneMaterial);
-        tower.position.set(pos.x, 20, pos.z);
-        tower.castShadow = true;
-        tower.receiveShadow = true;
-        tower.userData = {
-            isWall: true,
-            width: 13,
-            height: 40,
-            depth: 13
-        };
-        castle.add(tower);
-
-        // Tower roof
-        const roofGeometry = new THREE.ConeGeometry(8, 15, 8);
-        const roofMaterial = new THREE.MeshStandardMaterial({
-            color: 0xFF1493,
-            metalness: 0.7,
-            roughness: 0.3,
-            emissive: 0xFF1493,
-            emissiveIntensity: 0.3
-        });
-        const roof = new THREE.Mesh(roofGeometry, roofMaterial);
-        roof.position.set(pos.x, 47.5, pos.z);
-        roof.castShadow = true;
-        roof.userData = {
-            isWall: true,
-            width: 16,
-            height: 15,
-            depth: 16
-        };
-        castle.add(roof);
-    });
-
-    // Add interior windows
-    const interiorWindowMaterial = new THREE.MeshStandardMaterial({
-        color: 0x00BFFF,
-        metalness: 0.8,
-        roughness: 0.2,
-        emissive: 0x1E90FF,
-        emissiveIntensity: 0.8
-    });
-
-    // Add castle doors
-    const doorWidth = 8; // Slightly wider doors
-    const doorHeight = 20;
-    const doorThickness = 2; // Thicker doors for better collision
-
-    // Create door material with a magical appearance
-    const doorMaterial = new THREE.MeshStandardMaterial({
-        color: 0x4B0082, // Deep indigo color
-        metalness: 0.7,
-        roughness: 0.3,
-        emissive: 0x4B0082,
-        emissiveIntensity: 0.2
-    });
-
-    // Create left door
-    const leftDoorGeometry = new THREE.BoxGeometry(doorWidth, doorHeight, doorThickness);
-    const leftDoor = new THREE.Mesh(leftDoorGeometry, doorMaterial);
-    leftDoor.position.set(-8, 10, 24.5); // Adjusted position to be flush with wall
-    leftDoor.castShadow = true;
-    leftDoor.receiveShadow = true;
-    leftDoor.userData = {
-        isWall: true,
-        width: doorWidth,
-        height: doorHeight,
-        depth: doorThickness
-    };
-    castle.add(leftDoor);
-
-    // Create right door
-    const rightDoorGeometry = new THREE.BoxGeometry(doorWidth, doorHeight, doorThickness);
-    const rightDoor = new THREE.Mesh(rightDoorGeometry, doorMaterial);
-    rightDoor.position.set(8, 10, 24.5); // Adjusted position to be flush with wall
-    rightDoor.castShadow = true;
-    rightDoor.receiveShadow = true;
-    rightDoor.userData = {
-        isWall: true,
-        width: doorWidth,
-        height: doorHeight,
-        depth: doorThickness
-    };
-    castle.add(rightDoor);
-
-    // Add decorative details to the doors
-    const doorDetailMaterial = new THREE.MeshStandardMaterial({
-        color: 0xFF69B4, // Hot pink to match castle theme
-        metalness: 0.8,
-        roughness: 0.2,
-        emissive: 0xFF1493,
-        emissiveIntensity: 0.3
-    });
-
-    // Add frame details to each door
-    [leftDoor, rightDoor].forEach((door, index) => {
-        // Add vertical trim
-        const trimGeometry = new THREE.BoxGeometry(1, doorHeight - 2, doorThickness + 0.2);
-        const xPos = index === 0 ? 3 : -3; // Position based on left or right door
+        const castleModel = castleGLTF.scene;
         
-        const verticalTrim = new THREE.Mesh(trimGeometry, doorDetailMaterial);
-        verticalTrim.position.set(xPos, 0, 0.2);
-        door.add(verticalTrim);
+        // Position and scale the castle
+        castleModel.position.set(0, 0, 0);
+        castleModel.scale.set(2, 2, 2); // Adjust scale as needed
+        
+        // Add castle to the group
+        castle.add(castleModel);
 
-        // Add horizontal trims
-        const horizontalTrimGeometry = new THREE.BoxGeometry(doorWidth - 1, 1, doorThickness + 0.2);
-        const positions = [-8, -4, 0, 4, 8]; // Multiple horizontal trims
+        // Add the entire castle group to the scene
+        scene.add(castle);
 
-        positions.forEach(y => {
-            const horizontalTrim = new THREE.Mesh(horizontalTrimGeometry, doorDetailMaterial);
-            horizontalTrim.position.set(0, y, 0.2);
-            door.add(horizontalTrim);
+        // Create thick collision walls around the castle
+        const wallThickness = 2; // Thickness of the collision walls
+        const wallHeight = 20;   // Height of the collision walls
+        const wallOffset = 15;   // Distance from castle center
+
+        // Create collision walls with increased thickness and better positioning
+        const walls = [
+            // Front wall
+            createWall(0, wallOffset, 50, wallHeight, 0),
+            // Back wall
+            createWall(0, -wallOffset, 50, wallHeight, 0),
+            // Left wall
+            createWall(-wallOffset, 0, 50, wallHeight, Math.PI / 2),
+            // Right wall
+            createWall(wallOffset, 0, 50, wallHeight, Math.PI / 2)
+        ];
+
+        // Add collision data to walls with increased thickness
+        walls.forEach(wall => {
+            wall.userData.isWall = true;
+            wall.userData.width = 50;  // Increased width
+            wall.userData.height = wallHeight;
+            wall.userData.depth = wallThickness * 2;  // Doubled thickness
+            wall.userData.isSolid = true;  // Added flag for solid collision
         });
 
-        // Add door handle
-        const handleGeometry = new THREE.TorusGeometry(1, 0.3, 16, 32);
-        const handle = new THREE.Mesh(handleGeometry, doorDetailMaterial);
-        handle.position.set(index === 0 ? 2.5 : -2.5, 0, 0.8);
-        handle.rotation.y = Math.PI / 2;
-        door.add(handle);
-    });
+        console.log('Castle loaded successfully');
+        return castle;
 
-    // Add door frame
-    const doorFrameMaterial = new THREE.MeshStandardMaterial({
-        color: 0xFF69B4,
-        metalness: 0.6,
-        roughness: 0.4,
-        emissive: 0xFF1493,
-        emissiveIntensity: 0.2
-    });
-
-    // Top frame
-    const topFrameGeometry = new THREE.BoxGeometry(20, 2, doorThickness + 1);
-    const topFrame = new THREE.Mesh(topFrameGeometry, doorFrameMaterial);
-    topFrame.position.set(0, 20, 24.5);
-    castle.add(topFrame);
-
-    // Side frames
-    const sideFrameGeometry = new THREE.BoxGeometry(2, doorHeight + 2, doorThickness + 1);
-    const leftFrame = new THREE.Mesh(sideFrameGeometry, doorFrameMaterial);
-    leftFrame.position.set(-12, 10, 24.5);
-    castle.add(leftFrame);
-
-    const rightFrame = new THREE.Mesh(sideFrameGeometry, doorFrameMaterial);
-    rightFrame.position.set(12, 10, 24.5);
-    castle.add(rightFrame);
-
-    // Add windows to interior walls
-    const interiorWindowPositions = [
-        // Left wall interior windows
-        { x: -24.5, y: 15, z: -15, rotation: Math.PI / 2 },
-        { x: -24.5, y: 15, z: 15, rotation: Math.PI / 2 },
-        // Right wall interior windows
-        { x: 24.5, y: 15, z: -15, rotation: -Math.PI / 2 },
-        { x: 24.5, y: 15, z: 15, rotation: -Math.PI / 2 },
-        // Back wall interior windows
-        { x: -15, y: 15, z: -24.5, rotation: 0 },
-        { x: 15, y: 15, z: -24.5, rotation: 0 }
-    ];
-
-    interiorWindowPositions.forEach(pos => {
-        const windowGeometry = new THREE.BoxGeometry(6, 12, 1);
-        const window = new THREE.Mesh(windowGeometry, interiorWindowMaterial);
-        window.position.set(pos.x, pos.y, pos.z);
-        window.rotation.y = pos.rotation;
-        window.castShadow = true;
-        window.receiveShadow = true;
-        castle.add(window);
-
-        // Add window frame
-        const frameGeometry = new THREE.BoxGeometry(7, 13, 1.5);
-        const frameMaterial = new THREE.MeshStandardMaterial({
-            color: 0xFF69B4,
-            metalness: 0.5,
-            roughness: 0.7
-        });
-        const frame = new THREE.Mesh(frameGeometry, frameMaterial);
-        frame.position.copy(window.position);
-        frame.rotation.copy(window.rotation);
-        castle.add(frame);
-    });
-
-    return castle;
+    } catch (error) {
+        console.error('Error loading castle model:', error);
+        // Show error message to user
+        const errorMessage = showMessageBox(
+            "Oops! Something went wrong loading the castle. Please check the console for details.",
+            false
+        );
+        document.body.appendChild(errorMessage);
+        return null;
+    }
 }
 
 // Modify Cloud Kingdom creation to handle async castle creation
 async function createCloudKingdom() {
     const cloudKingdom = new THREE.Group();
 
-    // Main platform with collision matching starting platform
-    const platformGeometry = new THREE.BoxGeometry(80, 1, 80);
+    // Main platform with collision matching starting platform (smaller size)
+    const platformGeometry = new THREE.BoxGeometry(40, 1, 40); // Reduced from 80 to 40
     const platformMaterial = new THREE.MeshStandardMaterial({ 
         color: 0xE6E6FA,
         roughness: 0.3,
@@ -1713,15 +1840,71 @@ async function createCloudKingdom() {
     castle.position.set(0, 101, 0);  // Adjusted Y position to be just above platform
     scene.add(castle);
 
-    // Add pegasi
+    // Add pegasi with enhanced sparkle effects
     try {
-        // Load pink pegasus with larger scale
+        // Load pink pegasus with larger scale and position it on a platform near the player spawn
         const pinkPegasus = await loadModel(
             './models/base_basic_pbr.glb',
-            { x: -10, y: 106, z: 0 },
-            { x: 0, y: Math.PI / 4, z: 0 },
-            { x: 8, y: 8, z: 8 }  // Increased size to 8
+            { x: -30, y: 133, z: 0 },  // Positioned on the diagonal platform near player spawn
+            { x: 0, y: -Math.PI / 4, z: 0 },  // Changed rotation to face the opposite direction
+            { x: 12, y: 12, z: 12 }  // Keep size at 12
         );
+
+        // Add enhanced sparkle effect similar to magic wand
+        const sparkleGeometry = new THREE.BufferGeometry();
+        const sparkleCount = 150; // Increased for more particles
+        const positions = new Float32Array(sparkleCount * 3);
+        const colors = new Float32Array(sparkleCount * 3);
+
+        for (let i = 0; i < sparkleCount * 3; i += 3) {
+            // Random position around the pegasus with larger spread
+            positions[i] = (Math.random() - 0.5) * 12;     // Increased spread
+            positions[i + 1] = Math.random() * 12;         // Increased height spread
+            positions[i + 2] = (Math.random() - 0.5) * 12; // Increased spread
+
+            // Bright white sparkle colors with slight blue tint
+            colors[i] = Math.random() * 0.2 + 0.8;     // High red (0.8-1.0)
+            colors[i + 1] = Math.random() * 0.2 + 0.8; // High green (0.8-1.0)
+            colors[i + 2] = 1.0;                       // Full blue for slight blue tint
+        }
+
+        sparkleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        sparkleGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const sparkleMaterial = new THREE.PointsMaterial({
+            size: 0.2,              // Larger size
+            transparent: true,
+            opacity: 0.9,
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false       // Prevent z-fighting
+        });
+
+        const sparkles = new THREE.Points(sparkleGeometry, sparkleMaterial);
+        pinkPegasus.add(sparkles);
+
+        // Enhanced sparkle animation with more complex movement
+        const animateSparkles = () => {
+            const positions = sparkleGeometry.attributes.position.array;
+            const time = Date.now() * 0.001; // Slower time factor
+            
+            for (let i = 0; i < positions.length; i += 3) {
+                // More complex movement pattern
+                positions[i] += Math.sin(time + i * 0.1) * 0.02;
+                positions[i + 1] += Math.cos(time + i * 0.05) * 0.02;
+                positions[i + 2] += Math.sin(time * 0.8 + i * 0.05) * 0.02;
+                
+                // Reset particles that drift too far
+                if (Math.abs(positions[i]) > 6) positions[i] *= 0.95;
+                if (Math.abs(positions[i + 1]) > 6) positions[i + 1] *= 0.95;
+                if (Math.abs(positions[i + 2]) > 6) positions[i + 2] *= 0.95;
+            }
+            
+            sparkleGeometry.attributes.position.needsUpdate = true;
+            requestAnimationFrame(animateSparkles);
+        };
+        animateSparkles();
+
         pinkPegasus.userData = {
             isPegasus: true,
             name: 'Rose',
@@ -1743,12 +1926,12 @@ async function createCloudKingdom() {
 
     // Add floating platforms with consistent physics
     const floatingPlatformPositions = [
-        { x: 40, y: 105, z: 0 },
-        { x: -40, y: 110, z: 0 },
-        { x: 0, y: 115, z: 40 },
-        { x: 0, y: 108, z: -40 },
-        { x: 30, y: 112, z: 30 },
-        { x: -30, y: 107, z: -30 }
+        { x: -40, y: 125, z: 0 },      // Right platform
+        { x: -30, y: 127, z: 0 },     // Left platform (player spawn)
+        { x: -50, y: 123, z: 0 },      // Forward platform
+        { x: 0, y: 123, z: 0 },     // Back platform
+        { x: -60, y: 121, z: 0 },     // Diagonal platform
+        { x: -70, y: 120, z: 0 }    // Diagonal platform (pegasus platform)
     ];
 
     floatingPlatformPositions.forEach(pos => {
@@ -1765,53 +1948,34 @@ async function createCloudKingdom() {
         scene.add(floatingPlatform);
         platforms.push(floatingPlatform);  // This ensures it uses the same collision logic as starting platform
     });
-
-    // Add dense cloud layer below platform
-    for (let i = 0; i < 100; i++) {
-        const radius = Math.random() * 100 + 40;
-        const angle = (i / 100) * Math.PI * 2;
-        const x = Math.cos(angle) * radius;
-        const z = Math.sin(angle) * radius;
-        const y = 85 + Math.random() * 10;
-        
-        const cloud = createCloud(x, y, z);
-        cloud.scale.set(5 + Math.random() * 3, 2, 5 + Math.random() * 3);
-        cloud.position.y += 100;
-        scene.add(cloud);
-        clouds.push(cloud);
-    }
-
     // Add decorative clouds around castle (adjusted height)
     for (let i = 0; i < 80; i++) {
-        const radius = Math.random() * 60 + 30;
+        const radius = Math.random() * 80 + 40;  // Increased from 60+30 to 80+40
         const angle = (i / 80) * Math.PI * 2;
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
-        const y = 100 + Math.random() * 10;  // Adjusted to be closer to castle height
+        const y = 105;  // Adjusted to be closer to castle
         
         const cloud = createCloud(x, y, z);
         cloud.scale.set(3 + Math.random() * 2, 1.5, 3 + Math.random() * 2);
-        cloud.position.y += 100;
+        cloud.position.y += 72;  // Adjusted to be closer to castle
         scene.add(cloud);
         clouds.push(cloud);
     }
 
-    // Add cloud rings around towers (adjusted height)
-    towerPositions.forEach(pos => {
-        for (let i = 0; i < 8; i++) {
-            const angle = (i / 8) * Math.PI * 2;
-            const x = pos.x + Math.cos(angle) * 8;
-            const z = pos.z + Math.sin(angle) * 8;
-            const y = 110 + Math.random() * 5;  // Lowered from 130 to 110
-            
-            const cloud = createCloud(x, y, z);
-            cloud.scale.set(2, 1, 2);
-            cloud.position.y += 100;
-            scene.add(cloud);
-            clouds.push(cloud);
-        }
-    });
-
+    for (let i = 0; i < 80; i++) {
+        const radius = Math.random() * 80 + 40;  // Increased from 60+30 to 80+40
+        const angle = (i / 80) * Math.PI * 2;
+        const x = Math.cos(angle) * radius;
+        const z = Math.sin(angle) * radius;
+        const y = 75;  // Adjusted to be closer to castle
+        
+        const cloud = createCloud(x, y, z);
+        cloud.scale.set(3 + Math.random() * 2, 1.5, 3 + Math.random() * 2);
+        cloud.position.y += 42;  // Adjusted to be closer to castle
+        scene.add(cloud);
+        clouds.push(cloud);
+    }
     return platform;
 }
 
@@ -1878,43 +2042,6 @@ function loadModel(path, position, rotation, scale) {
     });
 }
 
-// Example usage for your pegasus models:
-async function loadPegasusModels() {
-    try {
-        // Load pink pegasus
-        const pinkPegasus = await loadModel(
-            './models/base_basic_pbr.glb',  // Replace with your actual file name
-            { x: -10, y: 5, z: 0 },            // Position
-            { x: 0, y: Math.PI / 4, z: 0 },    // Rotation
-            { x: 1, y: 1, z: 1 }               // Scale (adjust as needed)
-        );
-        castle.add(pinkPegasus);
-
-        // Load green pegasus
-        const greenPegasus = await loadModel(
-            './models/base_basic_pbr.glb',  // Replace with your actual file name
-            { x: 10, y: 5, z: 0 },             // Position
-            { x: 0, y: -Math.PI / 4, z: 0 },   // Rotation
-            { x: 1, y: 1, z: 1 }               // Scale (adjust as needed)
-        );
-        // Apply green color to the model (if needed)
-        greenPegasus.traverse(function(node) {
-            if (node.isMesh) {
-                node.material = new THREE.MeshStandardMaterial({
-                    color: 0x90EE90,
-                    metalness: 0.3,
-                    roughness: 0.3,
-                    emissive: 0x90EE90,
-                    emissiveIntensity: 0.1
-                });
-            }
-        });
-        castle.add(greenPegasus);
-
-    } catch (error) {
-        console.error('Failed to load pegasus models:', error);
-    }
-}
 
 // Add pegasus dialogue function
 function showPegasusDialogue(pegasus) {
@@ -2000,46 +2127,42 @@ function showFoodQuiz() {
                     true // Enable sparkly effect
                 );
                 document.body.appendChild(successMessage);
-
-                // Load raising canes model
-                const loader = new GLTFLoader();
-                loader.load('./models/raising_canes.glb', function(gltf) {
-                    const canesModel = gltf.scene;
-                    canesModel.position.set(0, 106, 0);
-                    canesModel.scale.set(1000, 1000, 1000);
-                    
-                    // Add glow effect
-                    canesModel.traverse(function(node) {
-                        if (node.isMesh) {
-                            node.material = new THREE.MeshStandardMaterial({
-                                color: 0xFFD700,
-                                metalness: 1.0,
-                                roughness: 0.1,
-                                emissive: 0xFFA500,
-                                emissiveIntensity: 2.0
-                            });
-                            node.castShadow = true;
-                            node.receiveShadow = true;
-                        }
-                    });
-                    scene.add(canesModel);
-                    console.log('Raising Canes model loaded and added to scene');
-
-                    // Add spotlight
-                    const spotLight = new THREE.SpotLight(0xFFFFFF, 10.0);
-                    spotLight.position.set(0, 150, 0);
-                    spotLight.target = canesModel;
-                    spotLight.angle = Math.PI / 2;
-                    spotLight.penumbra = 0.5;
-                    spotLight.decay = 1;
-                    spotLight.distance = 200;
-                    scene.add(spotLight);
-                }, 
-                undefined,
-                function(error) {
-                    console.error('Error loading raising canes model:', error);
-                });
-
+            try {
+                const nuggetPositions = [
+                    { x: -71, y: 124, z: 0 },
+                    { x: -72, y: 124, z: 0 },
+                    { x: -70, y: 123, z: 0 }
+                ];
+                for (const pos of nuggetPositions) {
+                    const nuggetModel = await loadModel(
+                        './models/chicken_nugget.glb',
+                        pos,
+                        { x: 0, y: -Math.PI / 4, z: 0 },
+                        { x: 12, y: 12, z: 12 }
+                    );
+                    foodItems.push(nuggetModel); // Store the model for later reference
+                    scene.add(nuggetModel);
+                }
+                console.log('Chicken nugget models loaded successfully');
+                // Load a single ramen noodle model
+                const ramenPosition = { x: -71, y: 120, z: 0 };
+                const ramenModel = await loadModel(
+                    './models/ramen_noodles.glb',
+                    ramenPosition,
+                    { x: 0, y: -Math.PI / 4, z: 0 },
+                    { x: 1.2, y: 1.2, z: 1.2 }
+                );
+                foodItems.push(ramenModel); // Store the model for later reference
+                scene.add(ramenModel);
+                console.log('Ramen noodle model loaded successfully');
+        } catch (error) {
+                    console.error('Error loading chicken nugget models:', error);
+                    const errorMessage = showMessageBox(
+                        "Oops! Something went wrong loading the chicken nuggets. Please check the console for details.",
+                        false
+                    );
+                    document.body.appendChild(errorMessage);
+                }
                 // Make success message clickable to dismiss
                 successMessage.onclick = () => {
                     successMessage.remove();
@@ -2066,4 +2189,334 @@ function showFoodQuiz() {
     });
 
     document.body.appendChild(quizContainer);
+}
+// Function to show the eat prompt
+function showEatPrompt() {
+    const message = document.createElement('div');
+    message.id = 'eatPrompt';  // Add ID for easy removal
+    message.style.position = 'fixed';
+    message.style.top = '20px';
+    message.style.left = '50%';
+    message.style.transform = 'translateX(-50%)';
+    message.style.background = 'rgba(0, 0, 0, 0.8)';
+    message.style.color = 'white';
+    message.style.padding = '20px';
+    message.style.borderRadius = '10px';
+    message.style.textAlign = 'center';
+    message.style.zIndex = '1000';
+    message.innerHTML = 'Press E to eat';
+    document.body.appendChild(message);           
+
+    // Remove after 5 seconds
+    setTimeout(() => {
+        const prompt = document.getElementById('eatPrompt');
+        if (prompt) prompt.remove();
+    }, 5000);
+}
+function isPlayerNear(model) {
+    const playerPosition = player.position; 
+    const distance = model.position.distanceTo(playerPosition);
+    return distance < 6; // Adjust the distance threshold as needed
+}
+let isEatingSoundPlaying = false;
+function eatFood(model) {
+    scene.remove(model);
+    const index = foodItems.indexOf(model);
+    if(index > -1) foodItems.splice(index, 1);
+    if(!isFartEffectPending) {
+        if(!isEatingSoundPlaying) {
+            isEatingSoundPlaying = true;
+            playSoundEffect('./sounds/eating-a-sandwich-102449.mp3',0.7).onended = () => {
+                isEatingSoundPlaying = false;
+            }; 
+        }
+        showDelayedEffectMessage();
+        isFartEffectPending = true;
+    }
+    healPlayer(25);
+}
+
+document.addEventListener('keydown', (event) => {
+    if (event.key.toLowerCase() === 'e') {
+        foodItems.forEach(food => {
+            if(isPlayerNear(food)) {
+                eatFood(food);
+            }
+        });
+    }
+});
+let fart_pending=true;
+function showDelayedEffectMessage() {
+    const existing = document.getElementById('stomachMessage');
+    if (existing) existing.remove();
+
+    // Create stomach message
+    const stomachMsg = document.createElement('div');
+    stomachMsg.id = 'stomachMessage';
+    stomachMsg.innerHTML = `
+        <div style="position: fixed; top: 20%; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.8); color: #FF69B4; padding: 20px; border-radius: 10px;
+            border: 2px solid #4B0082; font-family: Arial; text-align: center; z-index: 1000;">
+            <h3>The food was delicious...</h3>
+            <p>But now your stomach feels a bit weird...</p>
+        </div>
+    `;
+    document.body.appendChild(stomachMsg);
+    console.log('Stomach message shown');
+
+    setTimeout(() => {
+        console.log('15 seconds elapsed - starting transition');
+        stomachMsg.remove();
+        
+        try {
+            createFartEffect();
+            if(!fart_pending)playSoundEffect('./sounds/fart_placeholder.mp3', 0.7);
+            fart_pending=false;
+            addMagicalFartToInventory();
+            console.log('Fart effect completed');
+        } catch (e) {
+            console.error('Error in fart effect:', e);
+        }
+        setTimeout(() => {
+            console.log('Showing Rose message');
+            showRosePortalMessage();
+        }, 500);
+    }, 15000);
+} 
+let isVoiceLinePlaying=false;
+let currentRoseMessage=null;
+function showRosePortalMessage() {
+    if (currentRoseMessage && currentRoseMessage.parentNode) {
+        currentRoseMessage.parentNode.removeChild(currentRoseMessage);
+    }
+    console.log('Attempting to show Rose message');
+    const message = document.createElement('div');
+    currentRoseMessage=message;
+    message.id = 'roseMessage';
+    message.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: linear-gradient(45deg, #4B0082, #8A2BE2);
+        color: #FFB6C1;
+        padding: 30px;
+        border-radius: 15px;
+        text-align: center;
+        min-width: 400px;
+        cursor: pointer;
+        z-index: 1001;
+        border: 2px solid #FF69B4;
+        font-family: Arial, sans-serif;
+        box-shadow: 0 0 20px rgba(255,105,180,0.5);
+    `;
+
+    message.innerHTML = `
+        <h2 style="margin: 0; animation: sparkle 2s infinite;">
+            Rose: You have gained the magical fart!<br>
+            You are now strong enough to beat the evil French wizard Le Baguette!<br>
+        </h2>
+        <p style="margin-top: 20px; font-size: 14px; color: #FFFFFF;">(Click to continue)</p>
+        <style>
+            @keyframes sparkle {
+                0% { text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 30px #FF69B4; }
+                50% { text-shadow: 0 0 15px #fff, 0 0 25px #fff, 0 0 35px #FF69B4; }
+                100% { text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 30px #FF69B4; }
+            }
+        </style>
+    `;
+    document.body.appendChild(message);
+
+    const handleClick = (e) => {
+        if(isVoiceLinePlaying) return;
+        message.style.opacity = '0';
+        message.style.transition = 'opacity 0.3s';
+        message.style.pointerEvents = 'none';
+        isVoiceLinePlaying=true;
+
+        setTimeout(() => {
+            if(message.parentNode) {
+                message.parentNode.removeChild(message);
+                currentRoseMessage=null;
+            }
+            const voiceline= playSoundEffect('./sounds/bill_voiceline1.mp3',0.6);
+            voiceline.onended = () => {
+                showFinalQuiz();
+            };
+        },300);
+    }; 
+    message.addEventListener('click', handleClick);
+}
+
+let currentQuizBox = null;
+function showFinalQuiz() {
+    // Remove any existing quiz box first
+    if (currentQuizBox && currentQuizBox.parentNode) {
+        currentQuizBox.parentNode.removeChild(currentQuizBox);
+    }
+
+    // Create quiz container
+    const quizContainer = document.createElement('div');
+    currentQuizBox = quizContainer; // Store reference
+    
+    quizContainer.id = 'finalQuizBox';
+    quizContainer.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.9);
+        color: white;
+        padding: 30px;
+        border-radius: 15px;
+        text-align: center;
+        min-width: 400px;
+        border: 2px solid #FF0000;
+        font-family: Arial, sans-serif;
+        z-index: 1000;
+        opacity: 1;
+        transition: opacity 0.3s ease;
+    `;
+
+    // Add question
+    const question = document.createElement('h2');
+    question.textContent = 'What is the secret weakness of Le Baguette?';
+    question.style.cssText = `
+        color: #FF0000;
+        margin-bottom: 20px;
+    `;
+    quizContainer.appendChild(question);
+
+    // Add answers
+    const answers = ['Cheese', 'Baguettes', 'Wine', 'Garlic'];
+    answers.forEach(answer => {
+        const button = document.createElement('button');
+        button.textContent = answer;
+        button.style.cssText = `
+            display: block;
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 5px;
+            background: #444;
+            color: white;
+            cursor: pointer;
+            transition: background 0.3s;
+        `;
+
+        button.onclick = () => {
+            // Fade out quiz container
+            quizContainer.style.opacity = '0';
+            quizContainer.style.pointerEvents = 'none';
+            
+            setTimeout(() => {
+                // Remove quiz container
+                if (quizContainer.parentNode) {
+                    quizContainer.parentNode.removeChild(quizContainer);
+                    currentQuizBox = null;
+                }
+
+                if (answer === 'Wine') {
+                    const successMessage = showMessageBox(
+                        "Correct! The Wand of Wine is his weakness! The final portal appears!",
+                        true
+                    );
+                    // Make success message clickable
+                    successMessage.onclick = () => {
+                        if (successMessage.parentNode) {
+                            successMessage.parentNode.removeChild(successMessage);
+                        }
+                    };
+                    player.position.set(0, 210, 0);
+                    velocity.set(0, 0, 0);
+                    initBossFight();
+                } else {
+                    takeDamage(50);
+                    const failureMessage = showMessageBox(
+                        'Wrong! Le Baguette laughs at your ignorance!', 
+                        false
+                    );
+                    // Make failure message clickable
+                    failureMessage.onclick = () => {
+                        if (failureMessage.parentNode) {
+                            failureMessage.parentNode.removeChild(failureMessage);
+                        }
+                    };
+                }
+            }, 300);
+        };
+
+        quizContainer.appendChild(button);
+    });
+
+    document.body.appendChild(quizContainer);
+}
+function addMagicalFartToInventory() {
+    const fartSlot = document.querySelector('[data-item="fart"]');
+    fartSlot.style.display = 'flex';
+    
+    // Proper event listener setup
+    fartSlot.addEventListener('click', () => {
+        if(inventory.magicalFart.charges > 0) {
+            inventory.magicalFart.active = !inventory.magicalFart.active;
+            updateFartUI();
+        }
+    }); 
+    inventory.magicalFart.updateUI();
+}
+function updateFartUI() {
+    inventory.magicalFart.updateUI();
+}
+function createFartEffect() {
+    if (!inventory.magicalFart.active || inventory.magicalFart.charges <= 0) return;
+
+    // Create particle system
+    const particles = new THREE.BufferGeometry();
+    const particleCount = 100;
+    const posArray = new Float32Array(particleCount * 3);
+
+    for(let i = 0; i < particleCount * 3; i++) {
+        posArray[i] = (Math.random() - 0.5) * 2;
+    }
+
+    particles.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+    
+    const material = new THREE.PointsMaterial({
+        size: 0.2,
+        color: 0x00FF00,
+        transparent: true,
+        opacity: 0.8
+    });
+
+    const fartCloud = new THREE.Points(particles, material);
+    fartCloud.position.copy(player.position);
+    scene.add(fartCloud);
+
+    // Animate particles
+    const clock = new THREE.Clock();
+    const animate = () => {
+        const time = clock.getElapsedTime();
+        
+        // Update particle positions
+        const positions = fartCloud.geometry.attributes.position.array;
+        for(let i = 0; i < positions.length; i += 3) {
+            positions[i] += Math.sin(time * 5 + i) * 0.1;
+            positions[i + 1] += Math.cos(time * 3 + i) * 0.1;
+            positions[i + 2] += Math.sin(time * 2 + i) * 0.1;
+        }
+        
+        fartCloud.geometry.attributes.position.needsUpdate = true;
+        
+        // Fade out
+        material.opacity *= 0.97;
+        
+        if(material.opacity > 0.1) {
+            requestAnimationFrame(animate);
+        } else {
+            scene.remove(fartCloud);
+        }
+    };
+    //playSoundEffect('./sounds/fart_placeholder.mp3',0.5);
+    animate();
 }

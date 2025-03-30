@@ -13,6 +13,10 @@
         width: 100%;
         height: 100%;
       }
+      @keyframes fart-glow {
+        from { box-shadow: 0 0 10px #00FF00; }
+        to { box-shadow: 0 0 20px #00FF00; }
+      }
       #hpBar {
         position: fixed;
         top: 20px;
@@ -76,6 +80,10 @@
         height: 30px;
         filter: invert(1);
       }
+      .inventory-slot[data-item="fart"].active {
+        box-shadow: 0 0 15px #00FF00;
+        animation: fart-glow 1s infinite alternate;
+      }
       .item-tooltip {
         position: absolute;
         bottom: 100%;
@@ -90,6 +98,16 @@
         display: none;
         pointer-events: none;
         margin-bottom: 5px;
+      }
+      #roseMessage {
+        background: linear-gradient(45deg, #4B0082, #8A2BE2);
+        border: 2px solid #FF69B4;
+        font-family: 'Papyrus', fantasy;
+        text-shadow: 0 0 10px #FFFFFF;
+      }
+      #roseMessage h2 {
+        color: #FFB6C1;
+        font-size: 1.5em;
       }
       #tutorial {
         position: fixed;
@@ -149,9 +167,73 @@
         margin-bottom: 15px;
         font-size: 18px;
       }
+      /* NEW INTRO MESSAGE STYLES */
+      #intro-message {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0,0,0,0.8);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+        animation: fadeOut 3s ease-out 5s forwards;
+      }
+      .message-container {
+        text-align: center;
+        padding: 2rem;
+        background: rgba(0,0,0,0.7);
+        border: 2px solid #E0B0FF;
+        border-radius: 15px;
+        max-width: 80%;
+      }
+      .magic-text {
+        font-size: 4rem;
+        color: #FF69B4;
+        text-shadow: 0 0 10px #FF1493;
+        animation: pulse 2s infinite alternate;
+        font-family: 'Cinzel Decorative', cursive;
+      }
+      .subtitle {
+        font-size: 2rem;
+        color: #B19CD9;
+        margin: 1rem 0;
+        animation: textReveal 2s ease-out;
+      }
+      .cta {
+        font-size: 1.5rem;
+        color: #ADD8E6;
+        font-style: italic;
+      }
+      @keyframes pulse {
+        0% { transform: scale(1); }
+        100% { transform: scale(1.1); }
+      }
+      @keyframes fadeOut {
+        0% { opacity: 1; }
+        100% { opacity: 0; visibility: hidden; }
+      }
+      @keyframes textReveal {
+        0% { letter-spacing: 1em; opacity: 0; }
+        100% { letter-spacing: normal; opacity: 1; }
+      }
     </style>
+    <!-- Add Google Font for fancy text -->
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700&display=swap" rel="stylesheet">
   </head>
   <body>
+    <!-- INTRO MESSAGE (NEW) -->
+    <div id="intro-message">
+      <div class="message-container">
+        <h1 class="magic-text">Oh no!</h1>
+        <p class="subtitle">The villagers have been petrified...</p>
+        <p class="cta">I have to save them!</p>
+      </div>
+    </div>
+
+    <!-- EXISTING UI ELEMENTS -->
     <div id="hpBar">
       <div id="hpFill"></div>
       <div id="hpText">100/100</div>
@@ -168,6 +250,10 @@
       <div class="inventory-slot" data-item="guide">
         <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xOCA0SDZDMy43OSA0IDIgNS43OSAyIDhWMTZDMiAxOC4yMSAzLjc5IDIwIDYgMjBIMThjMi4yMSAwIDQtMS43OSA0LTRWOGMwLTIuMjEtMS43OS00LTQtNHptLTEuNzUgOWwtMi41IDNsLTIuNS0zSDguNWw0IDQuMjVsNCA0LjI1di0xLjVsLTIuNzUtMy4yNWgyLjc1bC0yLjc1LTMuMjVoMi43NXoiLz48L3N2Zz4=" alt="Guide Book">
         <div class="item-tooltip">Guide Book (Click for Help)</div>
+      </div>
+      <div class="inventory-slot" data-item="fart" style="display: none;">
+        <img src="sprites/fart_icon.png" alt="Magical Fart">
+        <div class="item-tooltip">Magical Fart (Inactive) - 3 charges left</div>
       </div>
     </div>
     <div id="tutorial">
@@ -204,5 +290,18 @@
       Crystals Collected: <span id="crystals-collected">0</span>/<span id="total-crystals">0</span>
     </div>
     <script type="module" src="/main.js"></script>
+    
+    <!-- Add this script to handle the intro message removal -->
+    <script>
+      // Remove intro message after animation completes
+      setTimeout(() => {
+        const intro = document.getElementById('intro-message');
+        if (intro) intro.remove();
+        // Play intro sound effect
+        const introSound = new Audio('sounds/gasp.mp3');
+        introSound.volume = 0.5;
+        introSound.play().catch(e => console.log("Audio play failed:", e));
+      }, 3000); // Matches CSS animation duration + delay
+    </script>
   </body>
-</html> 
+</html>
