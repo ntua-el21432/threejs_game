@@ -31,6 +31,7 @@ ambientSound.volume=0.6;
 ambientSound.play();
 
 let boss = null;
+let griphon=null;
 let bossHP = 300;
 let bossProjectiles = [];
 let playerProjectiles = [];
@@ -40,32 +41,43 @@ let bossHitbox=null;
 
 async function initBossFight() {
     try {
+        // Load the boss model (Dark Magician)
         boss = await loadModel(
             './models/dark_magician.glb',
             { x: 20, y: 204, z: 0 },  
-            { x: 0, y: -Math.PI/2, z: 0 }, 
-            { x: 3, y: 3, z: 3}
+            { x: 0, y: -Math.PI / 2, z: 0 }, 
+            { x: 3, y: 3, z: 3 }
         );
-        const hitboxGeometry=new THREE.SphereGeometry(3);
-        const hitboxMaterial=new THREE.MeshBasicMaterial({
-            color:0x00FF00,
-            transparent:true,
-            opacity:0.3,
+        // Create hitbox geometry and material
+        const hitboxGeometry = new THREE.SphereGeometry(3);
+        const hitboxMaterial = new THREE.MeshBasicMaterial({
+            color: 0x00FF00,
+            transparent: true,
+            opacity: 0.3,
             visible: false
         });
-        bossHitbox=new THREE.Mesh(hitboxGeometry,hitboxMaterial);
-        bossHitbox.position.y=8;
-        boss.add(bossHitbox);
 
+        // Boss hitbox
+        bossHitbox = new THREE.Mesh(hitboxGeometry, hitboxMaterial);
+        bossHitbox.position.y = 6;
+        boss.add(bossHitbox);
         scene.add(bossHitbox);
-        playSoundEffect('./sounds/boss_intro.mp3',0.5);
+        // Play boss intro sound
+        playSoundEffect('./sounds/boss_intro.mp3', 0.5);
+
+        // Add both models to the scene
         scene.add(boss);
+
+        // Create boss health bar
         createBossHPBar();
+
+        // Start boss attack loop
         bossAttackInterval = setInterval(bossAttack, 1200);
     } catch (error) {
-        console.error('Failed to load boss model:', error);
+        console.error('Failed to load boss or griphon model:', error);
     }
 }
+
 function rotateBossToFacePlayer() {
     // Calculate direction vector from boss to player
     const direction = new THREE.Vector3().subVectors(
@@ -161,6 +173,7 @@ function bossAttack() {
         const projectile = new THREE.Mesh(projectileGeometry, projectileMaterial);
 
         const bossWorldPos = new THREE.Vector3();
+        bossWorldPos.y+=3;
         boss.getWorldPosition(bossWorldPos);
         projectile.position.copy(bossWorldPos);
         
@@ -310,6 +323,41 @@ const createPlatform = (x, y, z, width, depth) => {
     return platform;
 };
 
+const createArena = (x, y, z, width, depth) => {
+    const geometry = new THREE.BoxGeometry(width, 1, depth);
+    const material = new THREE.MeshStandardMaterial({ 
+        color: 0x000000,  // Black color
+        roughness: 0.8,   // Increased roughness
+        metalness: 0.2,   // Slight metalness
+        flatShading: true // Enable flat shading for more detail
+    });
+    const platform = new THREE.Mesh(geometry, material);
+    platform.position.set(x, y, z);
+
+    // Add surrounding larger spikes
+    const spikeGeometry = new THREE.ConeGeometry(0.6, 2, 8); // Larger cone spike
+    const spikeMaterial = new THREE.MeshStandardMaterial({
+        color: 0x555555,  // Dark gray
+        roughness: 0.7,
+        metalness: 0.4
+    });
+
+    const spikeCount = 40;
+    for (let i = 0; i < spikeCount; i++) {
+        const angle = (i / spikeCount) * Math.PI * 2;
+        const radius = Math.max(width, depth) / 2 - 0.3;
+        const spike = new THREE.Mesh(spikeGeometry, spikeMaterial);
+        spike.position.set(Math.cos(angle) * radius, 1, Math.sin(angle) * radius);
+        spike.rotation.x = Math.PI / 2; // Pointing upwards
+        platform.add(spike);
+    }
+
+    scene.add(platform);
+    platforms.push(platform);
+    return platform;
+};
+
+
 function createIceRink(x, y, z, size = 15) {
     const rink = new THREE.Group();
     
@@ -435,7 +483,7 @@ const ground = createPlatform(0, 0, 0, 50, 50);  // Keep only the ground platfor
 const iceRink = createIceRink(8, 0.2, 6, 15); // Slightly above ground
 scene.add(iceRink);
 // Add to scene during initialization
-const skyPlatform = createPlatform(0,200,0,200,50);
+const skyPlatform = createArena(0,200,0,200,50);
 scene.add(skyPlatform);
 platforms.push(skyPlatform); // Add to collision detection
 //create a small house
@@ -1404,7 +1452,7 @@ function updateProjectiles() {
         // Check collision with boss
         if (boss && bossHP > 0) {
             const bossHitboxPos = boss.position.clone();
-            bossHitboxPos.y += 8; // Match the hitbox offset
+            bossHitboxPos.y += 6; // Match the hitbox offset
             const bossHitbox = new THREE.Sphere(bossHitboxPos, 3);
             const projectileHitbox = new THREE.Sphere(projectile.position.clone(), 1);
             
@@ -1589,7 +1637,7 @@ function showQuizPrompt() {
     message.style.borderRadius = '10px';s
     message.style.textAlign = 'center';
     message.style.zIndex = '1000';
-    message.innerHTML = 'A magical portal has appeared in the sky!<br>Fly through it to begin your magical quiz!';
+    message.innerHTML = 'Ωχ μια πύλη εμφανίστηκε στον ουρανό!<br>Πέρνα από την πύλη για να συνεχίσεις!';
     document.body.appendChild(message);
     
     // Remove after 5 seconds or when portal is entered
@@ -1631,13 +1679,13 @@ function showQuizBox() {
 
     // Add question
     const question = document.createElement('h2');
-    question.textContent = 'What is the name of the most dangerous polar bear in the whole world!?';
+    question.textContent = 'Ποιά τικτόκερ μας κάνει να γελάμε περισσότερο? Δύσκολο αλλά υπάρχει αντικειμενικά μία απάντηση';
     question.style.marginBottom = '20px';
     question.style.color = '#FF8C00';
     quizContainer.appendChild(question);
 
     // Add answers
-    const answers = ['Gaye', 'Bobos', 'Trompas', 'Shiver'];
+    const answers = ['Alexandra Ber', 'Amalia T', 'NIKI CLEANTOK', 'Nefeli'];
     answers.forEach(answer => {
         const button = document.createElement('button');
         button.textContent = answer;
@@ -1659,11 +1707,11 @@ function showQuizBox() {
         // Click handler
         button.onclick = () => {
             quizContainer.remove();  // Remove quiz immediately
-            if (answer === 'Shiver') {
+            if (answer === 'NIKI CLEANTOK') {
                 portal.visible = false;  // Hide portal first
                 // Show success message
                 const successMessage = showMessageBox(
-                    "Congratulations! You have been granted passage to the cloud kingdom.",
+                    "Σωστή απάντηση μπράβο!! Πρέπει να σταματήσει το μπρεινροτ",
                     true // Enable sparkly effect
                 );
                 successMessage.id = 'successMessage';
@@ -1681,7 +1729,7 @@ function showQuizBox() {
                 // Wrong answer
                 takeDamage(25);
                 const failureMessage = showMessageBox(
-                    `Wrong answer! You lost 25 HP. ${currentHP <= 0 ? 'You have perished!' : 'Try again!'}`
+                    `Είπα μία απάντηση υπάρχει μόνο τελέιωνε... Πάρε -25 HP. ${currentHP <= 0 ? 'You have perished!' : 'Try again!'}`
                 );
                 failureMessage.id = 'failureMessage';
                 document.body.appendChild(failureMessage);
@@ -1910,12 +1958,12 @@ async function createCloudKingdom() {
             name: 'Rose',
             hasSpoken: false,
             dialogue: [
-                "Welcome, brave one! I am Rose, guardian of the Cloud Kingdom.",
-                "I've seen what happened to your family... turned to crystal by the evil French sorcerer, Le Baguette.",
-                "Le Baguette's magic is powerful, but it has one weakness...",
-                "The Wand of Wine was forged in the finest French vineyards, but turned against him.",
-                "To break his curse, you must find this legendary Wand in the Crystal Caverns.",
-                "But before you go, you must be extremely hungry!! What is your favorite food?"
+                "Καλωσήρθες στο βασίλειο των συννέφων πριγκίπισσα!",
+                "Λυπάμαι πολύ για το χωριό σου που καταστράφηκε από το ξόρκι του κακού Γάλλου...",
+                "Ο Le Baguette είναι πανίσχυρος και αδίστακτος. Είναι τίγκα ρίεργος ο μπρο",
+                "Μόνο αν καταφέρεις να δαμάσεις τις δυνάμεις σου θα έχεις ελπίδα!",
+                "Πρέπει πρώτα όμως να φας για να ανακτήσεις τις δυνάμεις σου!",
+                "Τι ψήνεις να φας μπροκολόκο?"
             ],
             showFoodQuiz: true  // Add flag to show food quiz after dialogue
         };
@@ -1997,7 +2045,7 @@ initializeWorld();
 // Create a GLTF loader
 const loader = new GLTFLoader();
 
-function loadModel(path, position, rotation, scale) {
+async function loadModel(path, position, rotation, scale) {
     return new Promise((resolve, reject) => {
         loader.load(
             path,
@@ -2098,7 +2146,7 @@ function showFoodQuiz() {
     quizContainer.appendChild(question);
 
     // Add answers
-    const answers = ['TSIPOURA', 'KOTOMPOUKIES', 'MPOUTI', 'STRAGGISTO GIAOURTI'];
+    const answers = ['ΜΠΟΥΤΙ ΚΟΤΟΠΟΥΛΟΥ', 'ΝΟΥΝΤΛ+ΚΟΤΟΜΠΟΥΚΙΕΣ', 'ΣΟΛΩΜΟΣ', 'ΣΤΡΑΓΓΙΣΤΟ ΓΙΑΟΥΡΤΙ ΜΑΡΑΤΑ'];
     answers.forEach(answer => {
         const button = document.createElement('button');
         button.textContent = answer;
@@ -2120,10 +2168,10 @@ function showFoodQuiz() {
         // Click handler
         button.onclick = async () => {
             quizContainer.remove();  // Remove quiz immediately
-            if (answer === 'KOTOMPOUKIES') {
+            if (answer === 'ΝΟΥΝΤΛ+ΚΟΤΟΜΠΟΥΚΙΕΣ') {
                 // Show success message
                 const successMessage = showMessageBox(
-                    "Correct! Your love for KOTOMPOUKIES has summoned a magical reward!",
+                    "Τέλεια επιλογή κούκλα! Ορίστε το φαγητό σου! Φάε μέχρι να σκάσεις",
                     true // Enable sparkly effect
                 );
                 document.body.appendChild(successMessage);
@@ -2171,7 +2219,7 @@ function showFoodQuiz() {
                 // Wrong answer
                 takeDamage(25);
                 const failureMessage = showMessageBox(
-                    `Wrong! Everyone knows KOTOMPOUKIES is the best! You lost 25 HP. ${currentHP <= 0 ? 'You have perished!' : 'Try again!'}`
+                    `ΤΙ ΛΕΣ ΡΕ ΜΠΡΟ ΟΥΤΕ ΚΑΝ... ΓΙΑ ΤΗΝ ΜΑΛΑΚΙΑ ΠΟΥ ΕΙΠΕΣ ΕΧΑΣΕΣ 25 HP. ${currentHP <= 0 ? 'You have perished!' : 'Try again!'}`
                 );
                 document.body.appendChild(failureMessage);
                 failureMessage.onclick = () => {
@@ -2257,8 +2305,8 @@ function showDelayedEffectMessage() {
         <div style="position: fixed; top: 20%; left: 50%; transform: translateX(-50%);
             background: rgba(0,0,0,0.8); color: #FF69B4; padding: 20px; border-radius: 10px;
             border: 2px solid #4B0082; font-family: Arial; text-align: center; z-index: 1000;">
-            <h3>The food was delicious...</h3>
-            <p>But now your stomach feels a bit weird...</p>
+            <h3>Μες στην καύλα ήταν το φαί</h3>
+            <p>Ωχ το στομάχι μου νιώθει περιέργα...Θα με πάει σερπαντίνα σήμερα</p>
         </div>
     `;
     document.body.appendChild(stomachMsg);
@@ -2313,8 +2361,8 @@ function showRosePortalMessage() {
 
     message.innerHTML = `
         <h2 style="margin: 0; animation: sparkle 2s infinite;">
-            Rose: You have gained the magical fart!<br>
-            You are now strong enough to beat the evil French wizard Le Baguette!<br>
+            Rose: Χριστέ μου δεν έχω ξανακούσει πιο δυνατή κλανιά!!!<br>
+            Είσαι η μοναδική μας ελπίδα κατά του Le Baguette!<br>
         </h2>
         <p style="margin-top: 20px; font-size: 14px; color: #FFFFFF;">(Click to continue)</p>
         <style>
@@ -2380,7 +2428,7 @@ function showFinalQuiz() {
 
     // Add question
     const question = document.createElement('h2');
-    question.textContent = 'What is the secret weakness of Le Baguette?';
+    question.textContent = 'Για να δούμε τι έχεις μάθει μικρούλα. Ποιά είναι η πιο σύνηθης αντίδραση στην click χημεία?';
     question.style.cssText = `
         color: #FF0000;
         margin-bottom: 20px;
@@ -2388,7 +2436,7 @@ function showFinalQuiz() {
     quizContainer.appendChild(question);
 
     // Add answers
-    const answers = ['Cheese', 'Baguettes', 'Wine', 'Garlic'];
+    const answers = ['Diels-Alder', 'Friedel-Crafts', 'Grignard', 'CuAAC (Huisgen cycloaddition)'];
     answers.forEach(answer => {
         const button = document.createElement('button');
         button.textContent = answer;
@@ -2417,9 +2465,9 @@ function showFinalQuiz() {
                     currentQuizBox = null;
                 }
 
-                if (answer === 'Wine') {
+                if (answer === 'CuAAC (Huisgen cycloaddition)') {
                     const successMessage = showMessageBox(
-                        "Correct! The Wand of Wine is his weakness! The final portal appears!",
+                        "Θα σέβομαι. Πήγαινε τώρα να καταστρέψεις τον Le Baguette και να βάλεις ένα τέλος στα ξόρκια του!",
                         true
                     );
                     // Make success message clickable
@@ -2434,7 +2482,7 @@ function showFinalQuiz() {
                 } else {
                     takeDamage(50);
                     const failureMessage = showMessageBox(
-                        'Wrong! Le Baguette laughs at your ignorance!', 
+                        'Τι τσουτσέκι παριστάνεις εκεί πέρα μου λες?', 
                         false
                     );
                     // Make failure message clickable
