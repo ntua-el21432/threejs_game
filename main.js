@@ -41,14 +41,26 @@ let bossHitbox=null;
 
 async function initBossFight() {
     try {
-        // Load the boss model (Dark Magician)
-        boss = await loadModel(
-            './models/dark_magician.glb',
-            { x: 20, y: 204, z: 0 },  
-            { x: 0, y: -Math.PI / 2, z: 0 }, 
-            { x: 3, y: 3, z: 3 }
-        );
-        // Create hitbox geometry and material
+        // Load both models in parallel using Promise.all
+        const [bossModel, griphonModel] = await Promise.all([
+            loadModel(
+                './models/dark_magician.glb',
+                { x: 20, y: 204, z: 0 },  
+                { x: 0, y: -Math.PI / 2, z: 0 }, 
+                { x: 3, y: 3, z: 3 }
+            ),
+            loadModel(
+                './models/griphon.glb',
+                { x: 40, y: 214, z: 7 },  // Positioned opposite to the boss
+                { x: 0, y: Math.PI/2, z: 0},  
+                { x: 0.25, y: 0.25, z: 0.25 }  // Slightly smaller scale
+            )
+        ]);
+
+        // Assign to global variables
+        boss = bossModel;
+        griphon = griphonModel;
+        // Create hitbox geometry and material for boss
         const hitboxGeometry = new THREE.SphereGeometry(3);
         const hitboxMaterial = new THREE.MeshBasicMaterial({
             color: 0x00FF00,
@@ -61,18 +73,19 @@ async function initBossFight() {
         bossHitbox = new THREE.Mesh(hitboxGeometry, hitboxMaterial);
         bossHitbox.position.y = 6;
         boss.add(bossHitbox);
-        scene.add(bossHitbox);
+        
+        // Create hitbox for griphon (optional)
+        const griphonHitbox = new THREE.Mesh(hitboxGeometry.clone(), hitboxMaterial.clone());
+        griphonHitbox.position.y = 4;
+        griphon.add(griphonHitbox);
         // Play boss intro sound
         playSoundEffect('./sounds/boss_intro.mp3', 0.5);
 
-        // Add both models to the scene
         scene.add(boss);
-
-        // Create boss health bar
+        scene.add(griphon);
         createBossHPBar();
-
-        // Start boss attack loop
         bossAttackInterval = setInterval(bossAttack, 1200);
+
     } catch (error) {
         console.error('Failed to load boss or griphon model:', error);
     }
@@ -102,6 +115,25 @@ function rotateBossToFacePlayer() {
         const headTilt = direction.clone().cross(new THREE.Vector3(0, 1, 0));
         boss.children[0].rotation.z = headTilt.x * 0.2;
     }
+}
+function rotateGriphonToFacePlayer() {
+    // Calculate direction vector from boss to player
+    const direction = new THREE.Vector3().subVectors(
+        player.position,
+        griphon.position
+    ).normalize();
+    
+    // Calculate target rotation (ignore Y-axis for grounded enemies)
+    direction.y = 0;
+    const targetRotation = Math.atan2(direction.x , direction.z);
+    
+    // Smooth rotation using lerp
+    const rotationSpeed = 0.1;
+    griphon.rotation.y = THREE.MathUtils.lerp(
+        griphon.rotation.y,
+        targetRotation,
+        rotationSpeed
+    );
 }
 
 function createBossHPBar() {
@@ -221,7 +253,7 @@ function bossDefeated() {
 
 function showVictoryMessage() {
     const victoryMessage = showMessageBox(
-        "You defeated Le Baguette! The villagers are freed from the curse!",
+        "Είσαι θεά! Απελευθέρωσες τον κόσμο ολόκληρο από τον Le Baguette",
         true
     );
     setTimeout(() => {
@@ -322,20 +354,19 @@ const createPlatform = (x, y, z, width, depth) => {
     platforms.push(platform);
     return platform;
 };
-
 const createArena = (x, y, z, width, depth) => {
-    const geometry = new THREE.BoxGeometry(width, 1, depth);
+    const geometry = new THREE.BoxGeometry(width+30, 1, depth+30);
     const material = new THREE.MeshStandardMaterial({ 
-        color: 0x000000,  // Black color
-        roughness: 0.8,   // Increased roughness
-        metalness: 0.2,   // Slight metalness
+        color: 0x303030,  // Black color
+        roughness: 0.9,   // Increased roughness
+        metalness: 0.1,   // Slight metalness
         flatShading: true // Enable flat shading for more detail
     });
     const platform = new THREE.Mesh(geometry, material);
     platform.position.set(x, y, z);
 
     // Add surrounding larger spikes
-    const spikeGeometry = new THREE.ConeGeometry(0.6, 2, 8); // Larger cone spike
+    const spikeGeometry = new THREE.ConeGeometry(1.6, 4, 12); // Larger cone spike
     const spikeMaterial = new THREE.MeshStandardMaterial({
         color: 0x555555,  // Dark gray
         roughness: 0.7,
@@ -345,17 +376,17 @@ const createArena = (x, y, z, width, depth) => {
     const spikeCount = 40;
     for (let i = 0; i < spikeCount; i++) {
         const angle = (i / spikeCount) * Math.PI * 2;
-        const radius = Math.max(width, depth) / 2 - 0.3;
+        const radius = Math.max(width, depth) / 2 - 10;
         const spike = new THREE.Mesh(spikeGeometry, spikeMaterial);
         spike.position.set(Math.cos(angle) * radius, 1, Math.sin(angle) * radius);
-        spike.rotation.x = Math.PI / 2; // Pointing upwards
+        spike.rotation.x = 0// Pointing upwards
         platform.add(spike);
     }
 
     scene.add(platform);
     platforms.push(platform);
     return platform;
-};
+}
 
 
 function createIceRink(x, y, z, size = 15) {
@@ -738,16 +769,18 @@ const createCollectible = (x, y, z) => {
     const group = new THREE.Group();
 
     // Main ring
-    const ringGeometry = new THREE.TorusGeometry(1.5, 0.3, 16, 32);
-    const ringMaterial = new THREE.MeshStandardMaterial({
-        color: 0xFF69B4,  // Hot pink
-        metalness: 0.8,
-        roughness: 0.2,
-        emissive: 0xFF1493, // Deep pink
-        emissiveIntensity: 0.5
+    const discGeometry = new THREE.CircleGeometry(3, 32); // Larger radius (3 units)
+    const discMaterial = new THREE.MeshStandardMaterial({
+        color: 0xFF69B4,
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.DoubleSide,
+        emissive: 0xFF1493,
+        emissiveIntensity: 0.7
     });
-    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
-    group.add(ring);
+    const disc = new THREE.Mesh(discGeometry, discMaterial);
+    disc.rotation.x = Math.PI / 2;
+    group.add(disc);
 
     // Inner circle
     const innerGeometry = new THREE.CircleGeometry(1.2, 32);
@@ -780,7 +813,6 @@ const createCollectible = (x, y, z) => {
     // Position and add to scene
     group.position.set(x, y, z);
     group.rotation.x = Math.PI / 4;  // Tilt for better visibility
-    group.castShadow = true;
     scene.add(group);
     collectibles.push(group);
     return group;
@@ -791,26 +823,26 @@ function createPortal() {
     const portal = new THREE.Group();
 
     // Main portal ring
-    const ringGeometry = new THREE.TorusGeometry(3, 0.5, 16, 32);
+    const ringGeometry = new THREE.TorusGeometry(8, 1, 16, 32);
     const ringMaterial = new THREE.MeshStandardMaterial({
         color: 0xFF8C00,  // Orange
-        metalness: 0.7,
-        roughness: 0.3,
+        metalness: 0.9,
+        roughness: 0.1,
         emissive: 0xFFA500,
-        emissiveIntensity: 0.5
+        emissiveIntensity: 1
     });
     const ring = new THREE.Mesh(ringGeometry, ringMaterial);
     portal.add(ring);
 
     // Portal effect (inner circle)
-    const innerGeometry = new THREE.CircleGeometry(2.5, 32);
+    const innerGeometry = new THREE.CircleGeometry(7, 64);
     const innerMaterial = new THREE.MeshStandardMaterial({
         color: 0xFFA500,
         transparent: true,
         opacity: 0.7,
         side: THREE.DoubleSide,
-        emissive: 0xFFA500,
-        emissiveIntensity: 0.8
+        emissive: 0xFF4500,
+        emissiveIntensity: 1.5
     });
     const inner = new THREE.Mesh(innerGeometry, innerMaterial);
     inner.rotation.y = Math.PI / 2;
@@ -834,7 +866,14 @@ const portal = createPortal();
 
 // Replace previous crystal creation with one sky crystal
 const crystalPositions = [
-    { x: 0, y: 20, z: 0 }  // Single crystal in the center of the sky
+    { x: 0, y: 20, z: 0 },
+    { x: -30, y: 5, z: 0 },    // Near starting area
+    { x: 0, y: 5, z: -30 },    // North
+    { x: 30, y: 5, z: 0 },     // East
+    { x: 0, y: 5, z: 30 },     // South
+    { x: -20, y: 20, z: -20 }, // Elevated NW
+    { x: 20, y: 20, z: -20 },  // Elevated NE
+    { x: 0, y: 25, z: 0 }     // Single crystal in the center of the sky
 ];
 
 crystalPositions.forEach(pos => {
@@ -1094,7 +1133,7 @@ function checkCollisions() {
     // Check collectible collisions
     let allCrystalsCollected = true;
     collectibles.forEach((collectible, index) => {
-        if (collectible.visible && player.position.distanceTo(collectible.position) < 1.5) {
+        if (collectible.visible && player.position.distanceTo(collectible.position) < 2.5) {
             collectible.visible = false;
             healPlayer(10);
             if (tutorial.isActive) {
@@ -1113,7 +1152,7 @@ function checkCollisions() {
     }
 
     // Check portal collision if visible
-    if (portal.visible && player.position.distanceTo(portal.position) < 3) {
+    if (portal.visible && player.position.distanceTo(portal.position) < 10) {
         startQuiz();
     }
 
@@ -1420,6 +1459,7 @@ function animate() {
       }
       if(boss && bossHP > 0) {
         rotateBossToFacePlayer();
+        rotateGriphonToFacePlayer();
         updateProjectiles();
       }
     // Render scene
